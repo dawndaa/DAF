@@ -17,6 +17,176 @@ import warnings
 import os
 from pkg_resources import resource_filename
 
+try:
+    from numba import njit
+except ImportError:
+    njit = None
+
+
+_GLASS_BLUR_FAST_VALIDATED = None
+
+
+def _rng_states_equal(lhs, rhs):
+    return (
+        lhs[0] == rhs[0]
+        and np.array_equal(lhs[1], rhs[1])
+        and lhs[2] == rhs[2]
+        and lhs[3] == rhs[3]
+        and lhs[4] == rhs[4]
+    )
+
+
+def _glass_blur_reference_shuffle(x, max_delta, iterations):
+    x_shape = x.shape
+    for _ in range(iterations):
+        for h in range(x_shape[0] - max_delta, max_delta, -1):
+            for w in range(x_shape[1] - max_delta, max_delta, -1):
+                dx, dy = np.random.randint(-max_delta, max_delta, size=(2,))
+                h_prime, w_prime = h + dy, w + dx
+                x[h, w], x[h_prime, w_prime] = x[h_prime, w_prime], x[h, w]
+    return x
+
+
+if njit is not None:
+    @njit(cache=True)
+    def _glass_blur_apply_iteration_exact(x, offsets, max_delta):
+        offset_idx = 0
+        height, width, channels = x.shape
+
+        for h in range(height - max_delta, max_delta, -1):
+            for w in range(width - max_delta, max_delta, -1):
+                dx = offsets[offset_idx, 0]
+                dy = offsets[offset_idx, 1]
+                offset_idx += 1
+
+                h_prime = h + dy
+                w_prime = w + dx
+
+                for channel in range(channels):
+                    x[h, w, channel] = x[h_prime, w_prime, channel]
+                for channel in range(channels):
+                    x[h_prime, w_prime, channel] = x[h, w, channel]
+
+        return x
+else:
+    _glass_blur_apply_iteration_exact = None
+
+
+def _validate_glass_blur_fast_path():
+    global _GLASS_BLUR_FAST_VALIDATED
+
+    if _GLASS_BLUR_FAST_VALIDATED is not None:
+        return _GLASS_BLUR_FAST_VALIDATED
+
+    if _glass_blur_apply_iteration_exact is None:
+        _GLASS_BLUR_FAST_VALIDATED = False
+        return False
+
+    caller_rng_state = np.random.get_state()
+
+    try:
+        for max_delta in (1, 2, 3, 4):
+            seed = 7300 + max_delta
+            count = 257
+
+            np.random.seed(seed)
+            reference_offsets = np.empty((count, 2), dtype=np.int64)
+            for idx in range(count):
+                reference_offsets[idx] = np.random.randint(
+                    -max_delta, max_delta, size=(2,)
+                )
+            reference_rng_state = np.random.get_state()
+
+            np.random.seed(seed)
+            bulk_offsets = np.random.randint(
+                -max_delta, max_delta, size=(count, 2)
+            )
+            bulk_rng_state = np.random.get_state()
+
+            if (
+                not np.array_equal(reference_offsets, bulk_offsets)
+                or not _rng_states_equal(reference_rng_state, bulk_rng_state)
+            ):
+                _GLASS_BLUR_FAST_VALIDATED = False
+                warnings.warn(
+                    'Fast glass_blur disabled because bulk NumPy RNG is not '
+                    'exactly equivalent to the historical per-pixel calls.',
+                    RuntimeWarning,
+                )
+                return False
+
+        settings = ((1, 2), (2, 1), (2, 3), (3, 2), (4, 2))
+        base = np.arange(23 * 27 * 3, dtype=np.uint32)
+        base = (base % 251).astype(np.uint8).reshape(23, 27, 3)
+
+        for setting_idx, (max_delta, iterations) in enumerate(settings):
+            seed = 9100 + setting_idx
+
+            np.random.seed(seed)
+            reference = _glass_blur_reference_shuffle(
+                base.copy(), max_delta, iterations
+            )
+            reference_rng_state = np.random.get_state()
+
+            np.random.seed(seed)
+            fast = base.copy()
+            swaps_per_iteration = (
+                (fast.shape[0] - 2 * max_delta)
+                * (fast.shape[1] - 2 * max_delta)
+            )
+            for _ in range(iterations):
+                offsets = np.random.randint(
+                    -max_delta,
+                    max_delta,
+                    size=(swaps_per_iteration, 2),
+                )
+                fast = _glass_blur_apply_iteration_exact(
+                    fast, offsets, max_delta
+                )
+            fast_rng_state = np.random.get_state()
+
+            if (
+                not np.array_equal(reference, fast)
+                or not _rng_states_equal(reference_rng_state, fast_rng_state)
+            ):
+                _GLASS_BLUR_FAST_VALIDATED = False
+                warnings.warn(
+                    'Fast glass_blur disabled because compiled shuffle failed '
+                    'exact output/RNG equivalence validation.',
+                    RuntimeWarning,
+                )
+                return False
+
+        _GLASS_BLUR_FAST_VALIDATED = True
+        return True
+    except Exception as exc:
+        _GLASS_BLUR_FAST_VALIDATED = False
+        warnings.warn(
+            f'Fast glass_blur disabled after validation error: {exc}',
+            RuntimeWarning,
+        )
+        return False
+    finally:
+        np.random.set_state(caller_rng_state)
+
+
+def _glass_blur_shuffle_exact(x, max_delta, iterations):
+    if not _validate_glass_blur_fast_path():
+        return _glass_blur_reference_shuffle(x, max_delta, iterations)
+
+    swaps_per_iteration = (
+        (x.shape[0] - 2 * max_delta) * (x.shape[1] - 2 * max_delta)
+    )
+
+    for _ in range(iterations):
+        offsets = np.random.randint(
+            -max_delta,
+            max_delta,
+            size=(swaps_per_iteration, 2),
+        )
+        x = _glass_blur_apply_iteration_exact(x, offsets, max_delta)
+
+    return x
 
 
 def disk(radius, alias_blur=0.1, dtype=np.float32):
@@ -215,16 +385,12 @@ def glass_blur(x, severity=1):
 
     x = np.uint8(
         gaussian(np.array(x) / 255., sigma=c[0], channel_axis=-1) * 255)
-    x_shape = np.array(x).shape
 
-    # locally shuffle pixels
-    for i in range(c[2]):
-        for h in range(x_shape[0] - c[1], c[1], -1):
-            for w in range(x_shape[1] - c[1], c[1], -1):
-                dx, dy = np.random.randint(-c[1], c[1], size=(2,))
-                h_prime, w_prime = h + dy, w + dx
-                # swap
-                x[h, w], x[h_prime, w_prime] = x[h_prime, w_prime], x[h, w]
+    x = _glass_blur_shuffle_exact(
+        x,
+        max_delta=c[1],
+        iterations=c[2],
+    )
 
     return np.clip(gaussian(x / 255., sigma=c[0], channel_axis=-1), 0,
                    1) * 255
