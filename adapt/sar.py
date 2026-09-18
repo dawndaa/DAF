@@ -101,11 +101,13 @@ class SAR:
         else:
             self.prompt_templates = [REFERENCE_PROMPT]
 
-        # Match DAF/TENT: keep the text tower frozen and adapt visual LayerNorm only.
+        # SAR is optimized in train mode. Keep the text tower frozen and adapt
+        # only the visual normalization parameters selected by SAR.
+        self.model.train()
         self.model.transformer.requires_grad_(False)
         self.model.ln_final.requires_grad_(False)
         self.model.token_embedding.requires_grad_(False)
-        self.model.visual = self.set_ln_grads(self.model.visual)
+        self.model.visual = self.configure_sar_model(self.model.visual)
 
         params, _ = self.collect_ln_params(self.model.visual)
         if not params:
@@ -171,6 +173,13 @@ class SAR:
         self.ema = None
 
     def perform_adaptation(self, x):
+        """Run one or more SAR updates.
+
+        Original SAR filters *samples* by predictive entropy before the first
+        and second SAM passes. For dense segmentation, each input crop is
+        treated as one sample: pixel-wise entropy is averaged spatially (and
+        across prompt templates) to obtain one entropy value per crop.
+        """
         t1 = time.time()
         loss_report = []
 
@@ -180,35 +189,38 @@ class SAR:
             logits, _, _ = self.model(
                 x, self.text_x, True, interpolate=False
             )
-            entropy = self.softmax_entropy(logits)
-            reliable_mask_1 = entropy < self.margin_e0
+            entropy_map = self.softmax_entropy(logits)
+            entropy_per_sample = entropy_map.mean(dim=(0, -2, -1))
+            reliable_mask_1 = entropy_per_sample < self.margin_e0
             reliable_1 = int(reliable_mask_1.sum().item())
-            total = entropy.numel()
+            total = int(entropy_per_sample.numel())
 
             if reliable_1 == 0:
-                # Nothing is reliable enough to update on. Keep the current model.
-                loss_report.append(float(entropy.mean().detach().item()))
+                loss_report.append(float(entropy_per_sample.mean().detach().item()))
                 self.reliability_stats.append(
                     {"total": total, "reliable_first": 0, "reliable_second": 0}
                 )
                 continue
 
-            loss_first = entropy[reliable_mask_1].mean()
+            loss_first = entropy_per_sample[reliable_mask_1].mean()
             loss_first.backward()
             self.optimizer.first_step(zero_grad=True)
 
             logits_second, _, _ = self.model(
                 x, self.text_x, True, interpolate=False
             )
-            entropy_second = self.softmax_entropy(logits_second)
+            entropy_map_second = self.softmax_entropy(logits_second)
+            entropy_per_sample_second = entropy_map_second.mean(dim=(0, -2, -1))
 
-            # SAR first retains predictions selected by the first pass, then
-            # applies the reliability threshold again at the perturbed weights.
-            entropy_second_selected = entropy_second[reliable_mask_1]
+            # Original SAR keeps only samples selected by the first pass, then
+            # applies the same reliable-entropy filter again at w + epsilon.
+            entropy_second_selected = entropy_per_sample_second[reliable_mask_1]
             reliable_mask_2 = entropy_second_selected < self.margin_e0
             reliable_2 = int(reliable_mask_2.sum().item())
 
             if reliable_2 == 0:
+                # Avoid propagating NaNs when the second filtering stage is
+                # empty; restore the SAM perturbation and skip the update.
                 self.optimizer.restore_step(zero_grad=True)
                 loss_report.append(float(loss_first.detach().item()))
                 self.reliability_stats.append(
@@ -235,7 +247,7 @@ class SAR:
                 }
             )
 
-            # Official SAR model recovery criterion.
+            # Model recovery from the original SAR algorithm.
             if (
                 self.ema is not None
                 and self.sar_reset_constant_em >= 0
@@ -260,10 +272,22 @@ class SAR:
         return -(logits.softmax(-3) * logits.log_softmax(-3)).sum(-3)
 
     @staticmethod
-    def set_ln_grads(model):
+    def _sar_skip_ln(name):
+        """Mirror the official SAR ViT-Base parameter selection on CLIP names."""
+        if name == "ln_post":
+            return True
+        # Official SAR excludes ViT-Base blocks 9--11 and the final norm.
+        for idx in (9, 10, 11):
+            if name.startswith(f"transformer.resblocks.{idx}."):
+                return True
+        return False
+
+    @classmethod
+    def configure_sar_model(cls, model):
+        model.train()
         model.requires_grad_(False)
-        for module in model.modules():
-            if isinstance(module, nn.LayerNorm):
+        for name, module in model.named_modules():
+            if isinstance(module, nn.LayerNorm) and not cls._sar_skip_ln(name):
                 module.requires_grad_(True)
         return model
 
@@ -273,8 +297,8 @@ class SAR:
         names = []
         for name, module in model.named_modules():
             if isinstance(module, nn.LayerNorm):
-                for param_name, param in module.named_parameters():
-                    if param_name in ("weight", "bias"):
+                for param_name, param in module.named_parameters(recurse=False):
+                    if param_name in ("weight", "bias") and param.requires_grad:
                         params.append(param)
                         names.append(f"visual.{name}.{param_name}")
         return params, names
