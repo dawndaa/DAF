@@ -871,7 +871,10 @@ class TMPARemoteDataset(BaseSegDataset):
     the same data root can be reused by DAF without reorganizing files.
     """
 
-    METAINFO = dict(classes=(), palette=[])
+    # Classes differ across TMPA datasets and are supplied at runtime via
+    # ``metainfo``. Keep class-level METAINFO empty so MMSeg does not treat
+    # a fixed empty class tuple as the source taxonomy in get_label_map().
+    METAINFO = {}
     class_extensions = None
     extentions_to_real_class_idx = None
 
