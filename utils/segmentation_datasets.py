@@ -1396,6 +1396,8 @@ def prepare_data(dataset, data_dir, init_resize, patch_size, patch_stride, corru
             mm_config['pipeline'].insert(insert_after + 1, corrupt_transform)
 
             print(f"+ Corruption '{corruption}' added to the pipeline")
+            if corruption_cache_dataset_dir:
+                print(f"+ Corruption cache: {corruption_cache_dataset_dir}")
         else:
             raise ValueError("LoadImageFromFile not found in the pipeline")
 
@@ -1424,6 +1426,10 @@ def prepare_data(dataset, data_dir, init_resize, patch_size, patch_stride, corru
         loader_kwargs['prefetch_factor'] = 2
 
     dataloader = DataLoader(dataset, **loader_kwargs)
+    print(
+        f"+ DataLoader workers: {num_workers}"
+        + (" (persistent, prefetch_factor=2)" if num_workers > 0 else "")
+    )
 
     classes = dataset.metainfo['classes']
 
