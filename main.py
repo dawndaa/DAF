@@ -1453,6 +1453,12 @@ def main(args):
 
     validate_token_merge_args(args)
 
+    # Convenience alias for the 15 standard ImageNet-C corruptions.
+    if args.corruptions_list == ['imagenet_c']:
+        args.corruptions_list = get_corruption_names('common')
+    elif args.corruptions_list is None:
+        args.corruptions_list = ['original']
+
     # Save the configuration settings
     save_configuration(args)
 
