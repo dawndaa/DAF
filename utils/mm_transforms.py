@@ -133,6 +133,17 @@ class LoadCarlaAnnotations(BaseTransform):
 
 
 @TRANSFORMS.register_module()
+class BGR2RGB(BaseTransform):
+    """Convert MMCV's default BGR image array to RGB."""
+
+    def transform(self, results: dict) -> dict:
+        img = results.get('img')
+        if img is not None and img.ndim == 3 and img.shape[2] == 3:
+            results['img'] = img[..., ::-1].copy()
+        return results
+
+
+@TRANSFORMS.register_module()
 class PreserveOriginalGT(BaseTransform):
     """Keep a copy of the pre-resize segmentation map for original-size metrics."""
 
@@ -271,7 +282,7 @@ class ToTensorAndNormalize(BaseTransform):
 
     """
 
-    def __init__(self, mean, std,
+    def __init__(self, mean, std, bgr_to_rgb=True,
                  meta_keys=('img_path', 'seg_map_path', 'ori_shape',
                             'img_shape', 'patch_shape', 'scale_factor',
                             'patch_grid_shape')
@@ -279,6 +290,7 @@ class ToTensorAndNormalize(BaseTransform):
         
         self.mean = torch.tensor(mean).view(-1, 1, 1)
         self.std = torch.tensor(std).view(-1, 1, 1)
+        self.bgr_to_rgb = bgr_to_rgb
         self.meta_keys = meta_keys
 
     def transform(self, results: dict) -> dict:  
@@ -287,8 +299,8 @@ class ToTensorAndNormalize(BaseTransform):
             img = results['img']
             img = img.transpose(2, 0, 1)
             img = to_tensor(img).contiguous()
-            # convert to RGB
-            if img.shape[0] == 3:
+            # Generic DAF loads BGR; TMPA-compatible branch converts to RGB earlier.
+            if self.bgr_to_rgb and img.shape[0] == 3:
                 img = img[[2, 1, 0], ...]
             # normalize the image
             img = (img - self.mean) / self.std
@@ -299,8 +311,8 @@ class ToTensorAndNormalize(BaseTransform):
             patches = results['patches']
             patches = patches.transpose(0, 3, 1, 2)
             patches = to_tensor(patches).contiguous()
-            # convert to RGB
-            if patches.shape[1] == 3:
+            # Generic DAF loads BGR; TMPA-compatible branch converts to RGB earlier.
+            if self.bgr_to_rgb and patches.shape[1] == 3:
                 patches = patches[:, [2, 1, 0], ...]
 
             # normalize the image
