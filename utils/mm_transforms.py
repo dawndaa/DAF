@@ -133,6 +133,16 @@ class LoadCarlaAnnotations(BaseTransform):
 
 
 @TRANSFORMS.register_module()
+class PreserveOriginalGT(BaseTransform):
+    """Keep a copy of the pre-resize segmentation map for original-size metrics."""
+
+    def transform(self, results: dict) -> dict:
+        if 'gt_seg_map' in results:
+            results['ori_gt_seg_map'] = results['gt_seg_map'].copy()
+        return results
+
+
+@TRANSFORMS.register_module()
 class ResizeAndPatchify(BaseTransform):
     """
     ResizeAndPatchify is a transformation class that resizes an image and its corresponding segmentation map, 
@@ -308,6 +318,19 @@ class ToTensorAndNormalize(BaseTransform):
                                 'segmentation map, usually the segmentation '
                                 'map is 2D, but got '
                                 f'{gt_seg_map.shape}')
+
+        if 'ori_gt_seg_map' in results:
+            ori_gt_seg_map = results['ori_gt_seg_map']
+            if len(ori_gt_seg_map.shape) == 2:
+                ori_gt_seg_map = to_tensor(
+                    ori_gt_seg_map[None, ...].astype(np.int64)
+                ).contiguous()
+                packed_results['ori_gt_seg_map'] = ori_gt_seg_map
+            else:
+                raise ValueError(
+                    'Original ground-truth segmentation map must be 2D, '
+                    f'but got {ori_gt_seg_map.shape}'
+                )
         
         
         if 'gt_seg_map_patches' in results:
