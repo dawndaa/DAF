@@ -1212,6 +1212,7 @@ def prepare_data(dataset, data_dir, init_resize, patch_size, patch_stride, corru
             'pipeline': [
                 {'type': 'LoadImageFromFile'},
                 {'type': 'LoadAnnotations', 'reduce_zero_label': spec['reduce_zero_label']},
+                {'type': 'PreserveOriginalGT'},
                 {'type': 'ResizeAndPatchify', 'resize': resize, 'patch_size': patch_size, 'patch_stride': patch_stride},
                 {'type': 'ToTensorAndNormalize', 'mean': CLIP_MEAN, 'std': CLIP_STD},
             ],
@@ -1329,9 +1330,19 @@ def prepare_data(dataset, data_dir, init_resize, patch_size, patch_stride, corru
     ### add specified configs
     
     mm_config['data_root'] = data_dir
-    mm_config['pipeline'][2]['resize'] = init_resize
-    mm_config['pipeline'][2]['patch_size'] = patch_size
-    mm_config['pipeline'][2]['patch_stride'] = patch_stride
+
+    # Locate ResizeAndPatchify by type instead of relying on a fixed pipeline index.
+    # TMPA-compatible datasets insert PreserveOriginalGT before resizing.
+    resize_patch_transform = next(
+        (transform for transform in mm_config['pipeline']
+         if transform['type'] == 'ResizeAndPatchify'),
+        None
+    )
+    if resize_patch_transform is None:
+        raise ValueError("ResizeAndPatchify not found in the dataset pipeline")
+    resize_patch_transform['resize'] = init_resize
+    resize_patch_transform['patch_size'] = patch_size
+    resize_patch_transform['patch_stride'] = patch_stride
 
 
     ### add corruption to the pipline
@@ -1367,7 +1378,11 @@ def prepare_data(dataset, data_dir, init_resize, patch_size, patch_stride, corru
     
     persistent_workers = False
 
-    dataloader = DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, 
+    # TMPA evaluates remote-sensing validation/test sets in deterministic file order.
+    if dataset.tmpa_set_id if isinstance(dataset, TMPARemoteDataset) else False:
+        shuffle = False
+
+    dataloader = DataLoader(dataset, batch_size=batch_size, num_workers=num_workers,
                             collate_fn=custom_collate, persistent_workers=persistent_workers, pin_memory=True,
                             shuffle=shuffle)
 
