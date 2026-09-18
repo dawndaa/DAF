@@ -35,12 +35,65 @@ Please follow the [MMSeg data preparation document](https://github.com/open-mmla
 
 Additionally, inspired by [ImageNet-C](https://github.com/hendrycks/robustness), we generate 15 corruption types (e.g., noise, blur, weather, compression) *on-the-fly* at test time, allowing us to effectively evaluate each adaptation method's robustness to diverse distribution shifts. 
 
+
+### TMPA-compatible remote-sensing evaluation
+
+DAF can directly reuse the remote-sensing dataset layout used by
+[dawndaa/TMPA](https://github.com/dawndaa/TMPA). For these dataset IDs, DAF
+follows the TMPA preprocessing/evaluation protocol rather than DAF's generic
+dataset geometry:
+
+- RGB input, matching TMPA's `PIL.convert("RGB")`
+- square resize to `448 x 448` by default
+- sliding-window crops of `224 x 224` with stride `112`
+- CLIP normalization equivalent to TMPA's torchvision normalization
+- deterministic file order
+- prediction restored to the original image resolution before metric computation
+
+Supported TMPA dataset IDs are:
+`openearthmap`, `loveda`, `isaid`, `potsdam`, `uavid`, `udd5`,
+`vaihingen`, `vdd`, `whu_aerial`, `whu_sat`, `inria`, `xbd`,
+`chn6-cug`, `deepglobe`, `massachusetts`, `spacenet`, and `wbs_si`.
+
+The 15 standard ImageNet-C corruptions can be selected with the shortcut
+`--corruptions_list imagenet_c`. They are applied on-the-fly in RGB space.
+Use `--corruption_severity 1..5` to control severity.
+
+Example SAR continual evaluation on LoveDA:
+
+```bash
+python main.py \
+  --adapt \
+  --method sar \
+  --reset_mode continual \
+  --dataset loveda \
+  --data_dir /path/to/TMPA/data_root \
+  --corruptions_list imagenet_c \
+  --corruption_severity 5 \
+  --tmpa_resolution 448 \
+  --tmpa_crop_size 224 \
+  --tmpa_crop_stride 112 \
+  --ovss_type naclip \
+  --ovss_backbone ViT-B/16 \
+  --lr 1e-4 \
+  --steps 1 \
+  --batch-size 1 \
+  --save_dir .save/loveda/sar/
+```
+
+For a clean run, use `--corruptions_list original`. The TMPA-specific
+`--tmpa_*` options are independent of DAF's generic
+`--init_resize/--patch_size/--patch_stride` options.
+
+
 ---
 ### Step 3: Perform Adaptation
 
-DAF supports two adaptation methods:
+DAF includes multiple adaptation baselines, including:
 
 - **TENT** – Entropy minimization over visual encoder LayerNorm parameters.
+- **SAR** – Sharpness-Aware and Reliable entropy minimization using SAM and reliability filtering.
+- **CoTTA** – Continual test-time adaptation with an EMA teacher and stochastic restoration.
 - **MLMP** – Multi-level multi-prompt optimization with entropy, diversity, and cross-modal anchor consistency losses.
 
 The following example runs MLMP adaptation on PASCAL VOC 20:

@@ -12,6 +12,7 @@ from adapt import get_method
 from utils import segmentation_datasets
 from utils.metrics import intersect_and_union, process_metrics, total_area_to_metrics
 from utils.misc import set_global_seeds, save_configuration, aggregate_pred_patches
+from utils.imagecorruptions import get_corruption_names
 from datetime import datetime
 
 _original_print = print
@@ -38,7 +39,7 @@ def validate_token_merge_args(args):
     if not getattr(args, 'token_merge', False):
         return
 
-    supported_methods = {'tent', 'mlmp', 'method', 'segtto'}
+    supported_methods = {'tent', 'mlmp', 'method', 'segtto', 'sar'}
     if args.method not in supported_methods:
         raise ValueError(
             f"--token_merge is only supported for methods {sorted(supported_methods)}; got {args.method}."
@@ -123,7 +124,11 @@ def argparser():
             'DrivingDataset',
             'PascalVOC20Dataset', 'PascalVOC21Dataset',
             'PascalContext59Dataset', 'PascalContext60Dataset', 'SUIM6Dataset', 'SUIM5Dataset',
-            'DUTUSEG5Dataset', 'DUTUSEG4Dataset'
+            'DUTUSEG5Dataset', 'DUTUSEG4Dataset',
+            # TMPA remote-sensing dataset IDs (kept identical to TMPA CLI names)
+            'openearthmap', 'loveda', 'isaid', 'potsdam', 'uavid', 'udd5',
+            'vaihingen', 'vdd', 'whu_aerial', 'whu_sat', 'inria', 'xbd',
+            'chn6-cug', 'deepglobe', 'massachusetts', 'spacenet', 'wbs_si'
         ),
         help='Which dataset to load'
     )
@@ -162,7 +167,32 @@ def argparser():
         nargs='+',
         type=str,
         default=None,
-        help='List of corruptions to apply for robustness (e.g., gaussian, motion_blur)'
+        help='List of corruptions to apply for robustness (e.g., gaussian_noise, motion_blur)'
+    )
+    parser.add_argument(
+        '--corruption_severity',
+        type=int,
+        default=5,
+        choices=(1, 2, 3, 4, 5),
+        help='ImageNet-C corruption severity used by CorruptTransform (1-5)'
+    )
+    parser.add_argument(
+        '--tmpa_resolution',
+        type=int,
+        default=448,
+        help='TMPA-compatible square resize resolution for remote-sensing datasets'
+    )
+    parser.add_argument(
+        '--tmpa_crop_size',
+        type=int,
+        default=224,
+        help='TMPA-compatible sliding-window crop size'
+    )
+    parser.add_argument(
+        '--tmpa_crop_stride',
+        type=int,
+        default=112,
+        help='TMPA-compatible sliding-window stride'
     )
     
     # ----------------------------------------
@@ -667,91 +697,32 @@ def add_method_specific_args(parser, method):
             '--sar_margin_e0',
             type=float,
             default=0.4,
-            help='Margin E_0 coefficient for reliable entropy filtering (multiplied by log(num_classes))'
+            help='Reliable-entropy threshold coefficient E0 = coefficient * log(num_classes)'
         )
         parser.add_argument(
             '--sar_reset_constant_em',
             type=float,
             default=0.2,
-            help='EMA threshold for model recovery (reset if EMA < this value)'
+            help='EMA entropy threshold for SAR model recovery; set <0 to disable recovery'
         )
         parser.add_argument(
             '--sar_rho',
             type=float,
             default=0.05,
-            help='Perturbation radius for SAM optimizer'
+            help='SAM neighborhood radius used by SAR'
         )
         parser.add_argument(
-            '--loss_ent',
-            type=lambda x: x.lower() == 'true',
-            default=True,
-            help='Enable entropy minimization loss (True/False)'
-        )
-        parser.add_argument(
-            '--lamb_ent',
-            type=float,
-            default=1.0,
-            help='Lambda multiplier for entropy minimization loss'
-        )
-        parser.add_argument(
-            '--loss_div',
-            type=lambda x: x.lower() == 'true',
+            '--sar_adaptive',
+            type=str2bool,
             default=False,
-            help='Enable class-wise diversity loss to prevent model collapse (True/False)'
+            help='Use adaptive SAM scaling in SAR (True/False)'
         )
         parser.add_argument(
-            '--lamb_div',
-            type=float,
-            default=1.0,
-            help='Lambda multiplier for diversity loss'
-        )
-        parser.add_argument(
-            '--loss_cmac',
-            type=lambda x: x.lower() == 'true',
-            default=False,
-            help='Enable Cross-Modal Anchor Consistency loss (True/False)'
-        )
-        parser.add_argument(
-            '--lamb_cmac_p1',
-            type=float,
-            default=1.0,
-            help='Lambda multiplier for CMAC away loss'
-        )
-        parser.add_argument(
-            '--lamb_cmac_p2',
-            type=float,
-            default=1.0,
-            help='Lambda multiplier for CMAC toward loss'
-        )
-        parser.add_argument(
-            '--module_safs',
-            type=lambda x: x.lower() == 'true',
-            default=False,
-            help='Enable SAFS sample filtering module (True/False)'
-        )
-        parser.add_argument(
-            '--alpha_safs',
-            type=float,
-            default=0.5,
-            help='Alpha parameter for SAFS adaptive threshold'
-        )
-        parser.add_argument(
-            '--diag_safs',
-            type=lambda x: x.lower() == 'true',
-            default=False,
-            help='Enable SAFS diagnostic justification analysis (True/False)'
-        )
-        parser.add_argument(
-            '--diag_cmac',
-            type=lambda x: x.lower() == 'true',
-            default=False,
-            help='Enable CMAC diagnostic justification analysis (True/False)'
-        )
-        parser.add_argument(
-            '--diag_div',
-            type=lambda x: x.lower() == 'true',
-            default=False,
-            help='Enable DIV diagnostic justification analysis (True/False)'
+            '--sar_base_optimizer',
+            type=str,
+            default='sgd',
+            choices=('sgd', 'adam', 'adamw'),
+            help='Base optimizer wrapped by SAM; official SAR uses SGD'
         )
 
     elif method == 'cotta':
@@ -1482,6 +1453,12 @@ def main(args):
 
     validate_token_merge_args(args)
 
+    # Convenience alias for the 15 standard ImageNet-C corruptions.
+    if args.corruptions_list == ['imagenet_c']:
+        args.corruptions_list = get_corruption_names('common')
+    elif args.corruptions_list is None:
+        args.corruptions_list = ['original']
+
     # Save the configuration settings
     save_configuration(args)
 
@@ -1520,7 +1497,11 @@ def main(args):
         data_loader, org_classes = segmentation_datasets.prepare_data(args.dataset, args.data_dir, args.init_resize,
                                                                   args.patch_size, args.patch_stride, corruption=corruption, 
                                                                   batch_size=args.batch_size, num_workers=args.workers,
-                                                                  shuffle=not getattr(args, 'save_demo', False))
+                                                                  shuffle=not getattr(args, 'save_demo', False),
+                                                                  corruption_severity=args.corruption_severity,
+                                                                  tmpa_resolution=args.tmpa_resolution,
+                                                                  tmpa_crop_size=args.tmpa_crop_size,
+                                                                  tmpa_crop_stride=args.tmpa_crop_stride)
 
         if getattr(args, 'save_demo', False) and demo_indices is None:
             demo_indices = set(get_demo_indices(len(data_loader.dataset), args.save_k, args.seed))
@@ -1602,25 +1583,58 @@ def main(args):
                 with torch.no_grad():
                     patch_preds = adapt_method.evaluate(inputs)
 
-                # compute eval scale for updownsample support
-                eval_size = getattr(adapt_method, 'eval_size', args.patch_size[0])
-                eval_scale = eval_size / args.patch_size[0]
+                # Use TMPA geometry for TMPA datasets; generic DAF geometry otherwise.
+                is_tmpa_dataset = args.dataset in segmentation_datasets.TMPA_REMOTE_SPECS
+                if is_tmpa_dataset:
+                    eval_patch_size = (args.tmpa_crop_size, args.tmpa_crop_size)
+                    eval_patch_stride = args.tmpa_crop_stride
+                    has_resize = True
+                else:
+                    eval_patch_size = tuple(args.patch_size)
+                    eval_patch_stride = args.patch_stride
+                    has_resize = bool(args.init_resize)
 
-                # aggregate the predictions to construct the final segmentation map for each image in the batch
-                if args.init_resize:
+                # compute eval scale for up/downsample support
+                eval_size = getattr(adapt_method, 'eval_size', eval_patch_size[0])
+                eval_scale = eval_size / eval_patch_size[0]
+
+                # aggregate patch predictions back to the resized image canvas
+                if has_resize:
                     if eval_scale < 1.0:
-                        scaled_patch_size = (round(args.patch_size[0] * eval_scale), round(args.patch_size[1] * eval_scale))
-                        scaled_patch_stride = round(args.patch_stride * eval_scale)
-                        scaled_img_shapes = [(round(h * eval_scale), round(w * eval_scale)) for h, w in image_shapes]
-                        reconstructed_preds = aggregate_pred_patches(patch_preds, patch_grid_shape, scaled_img_shapes, scaled_patch_size, scaled_patch_stride)
+                        scaled_patch_size = (
+                            round(eval_patch_size[0] * eval_scale),
+                            round(eval_patch_size[1] * eval_scale),
+                        )
+                        scaled_patch_stride = round(eval_patch_stride * eval_scale)
+                        scaled_img_shapes = [
+                            (round(h * eval_scale), round(w * eval_scale))
+                            for h, w in image_shapes
+                        ]
+                        reconstructed_preds = aggregate_pred_patches(
+                            patch_preds, patch_grid_shape, scaled_img_shapes,
+                            scaled_patch_size, scaled_patch_stride
+                        )
                     else:
-                        reconstructed_preds = aggregate_pred_patches(patch_preds, patch_grid_shape, image_shapes, args.patch_size, args.patch_stride)
+                        reconstructed_preds = aggregate_pred_patches(
+                            patch_preds, patch_grid_shape, image_shapes,
+                            eval_patch_size, eval_patch_stride
+                        )
                 else:
                     reconstructed_preds = patch_preds
 
                 
                 # calculate the metrics for each image in the batch (since the images may have different sizes)
                 for idx, (pd, gt) in enumerate(zip(reconstructed_preds, original_gts)):
+
+                    # TMPA evaluates at the original image resolution. For datasets
+                    # that preserve the pre-resize GT, restore dense logits before metrics.
+                    if pd.shape[-2:] != gt.shape[-2:]:
+                        pd = torch.nn.functional.interpolate(
+                            pd.unsqueeze(0),
+                            size=gt.shape[-2:],
+                            mode='bilinear',
+                            align_corners=False,
+                        ).squeeze(0)
 
                     # get the predictions
                     pd = pd.softmax(dim=0) # [num_org_classes, H, W]
@@ -1640,7 +1654,7 @@ def main(args):
 
                     # get the ground truth
                     gt = gt[0]             # [H, W]
-                    if eval_scale < 1.0:
+                    if eval_scale < 1.0 and not is_tmpa_dataset:
                         target_h, target_w = scaled_img_shapes[idx]
                         gt = torch.nn.functional.interpolate(
                             gt.unsqueeze(0).unsqueeze(0).float(), size=(target_h, target_w), mode='nearest'
@@ -2265,6 +2279,13 @@ def process_single_batch_no_adapt(args, device, adapt_method, data, domain_info,
 
     batch_results = []
     for idx, (pd, gt) in enumerate(zip(reconstructed_preds, original_gts)):
+        if pd.shape[-2:] != gt.shape[-2:]:
+            pd = torch.nn.functional.interpolate(
+                pd.unsqueeze(0),
+                size=gt.shape[-2:],
+                mode='bilinear',
+                align_corners=False,
+            ).squeeze(0)
         pd = pd.softmax(dim=0)
 
         if domain_info['ext_to_real_cls_indx'] is not None:
@@ -2274,7 +2295,7 @@ def process_single_batch_no_adapt(args, device, adapt_method, data, domain_info,
         pd = pd.argmax(dim=0)
         pd = pd.to(gt.device)
         gt = gt[0]
-        if eval_scale < 1.0:
+        if eval_scale < 1.0 and not is_tmpa_dataset:
             target_h, target_w = scaled_img_shapes[idx]
             gt = torch.nn.functional.interpolate(
                 gt.unsqueeze(0).unsqueeze(0).float(), size=(target_h, target_w), mode='nearest'
@@ -2309,6 +2330,10 @@ def prepare_domain_info(args, device, corruption, c_idx):
         batch_size=args.batch_size,
         num_workers=args.workers,
         shuffle=not getattr(args, 'save_demo', False),
+        corruption_severity=args.corruption_severity,
+        tmpa_resolution=args.tmpa_resolution,
+        tmpa_crop_size=args.tmpa_crop_size,
+        tmpa_crop_stride=args.tmpa_crop_stride,
     )
 
     if args.class_extensions and data_loader.dataset.class_extensions is not None:
@@ -2371,24 +2396,51 @@ def process_single_batch(args, device, adapt_method, data, domain_info, demo_inf
     with torch.no_grad():
         patch_preds = adapt_method.evaluate(inputs)
 
-    eval_size = getattr(adapt_method, 'eval_size', args.patch_size[0])
-    eval_scale = eval_size / args.patch_size[0]
+    is_tmpa_dataset = args.dataset in segmentation_datasets.TMPA_REMOTE_SPECS
+    if is_tmpa_dataset:
+        eval_patch_size = (args.tmpa_crop_size, args.tmpa_crop_size)
+        eval_patch_stride = args.tmpa_crop_stride
+        has_resize = True
+    else:
+        eval_patch_size = tuple(args.patch_size)
+        eval_patch_stride = args.patch_stride
+        has_resize = bool(args.init_resize)
 
-    if args.init_resize:
+    eval_size = getattr(adapt_method, 'eval_size', eval_patch_size[0])
+    eval_scale = eval_size / eval_patch_size[0]
+
+    if has_resize:
         if eval_scale < 1.0:
-            scaled_patch_size = (round(args.patch_size[0] * eval_scale), round(args.patch_size[1] * eval_scale))
-            scaled_patch_stride = round(args.patch_stride * eval_scale)
-            scaled_img_shapes = [(round(h * eval_scale), round(w * eval_scale)) for h, w in image_shapes]
+            scaled_patch_size = (
+                round(eval_patch_size[0] * eval_scale),
+                round(eval_patch_size[1] * eval_scale),
+            )
+            scaled_patch_stride = round(eval_patch_stride * eval_scale)
+            scaled_img_shapes = [
+                (round(h * eval_scale), round(w * eval_scale))
+                for h, w in image_shapes
+            ]
             reconstructed_preds = aggregate_pred_patches(
-                patch_preds, patch_grid_shape, scaled_img_shapes, scaled_patch_size, scaled_patch_stride)
+                patch_preds, patch_grid_shape, scaled_img_shapes,
+                scaled_patch_size, scaled_patch_stride
+            )
         else:
             reconstructed_preds = aggregate_pred_patches(
-                patch_preds, patch_grid_shape, image_shapes, args.patch_size, args.patch_stride)
+                patch_preds, patch_grid_shape, image_shapes,
+                eval_patch_size, eval_patch_stride
+            )
     else:
         reconstructed_preds = patch_preds
 
     batch_results = []
     for idx, (pd, gt) in enumerate(zip(reconstructed_preds, original_gts)):
+        if pd.shape[-2:] != gt.shape[-2:]:
+            pd = torch.nn.functional.interpolate(
+                pd.unsqueeze(0),
+                size=gt.shape[-2:],
+                mode='bilinear',
+                align_corners=False,
+            ).squeeze(0)
         pd = pd.softmax(dim=0)
 
         if domain_info['ext_to_real_cls_indx'] is not None:
@@ -2398,7 +2450,7 @@ def process_single_batch(args, device, adapt_method, data, domain_info, demo_inf
         pd = pd.argmax(dim=0)
         pd = pd.to(gt.device)
         gt = gt[0]
-        if eval_scale < 1.0:
+        if eval_scale < 1.0 and not is_tmpa_dataset:
             target_h, target_w = scaled_img_shapes[idx]
             gt = torch.nn.functional.interpolate(
                 gt.unsqueeze(0).unsqueeze(0).float(), size=(target_h, target_w), mode='nearest'

@@ -698,6 +698,244 @@ class SUIM5Dataset(BaseSegDataset):
 
 
 
+# TMPA remote-sensing evaluation protocol.
+# Dataset IDs, directory layout, class names and zero-label behavior mirror
+# dawndaa/TMPA/data/datautils.py and data/cls_to_names_remote.py.
+TMPA_REMOTE_SPECS = {
+    'openearthmap': {
+        'dirname': 'OpenEarthMap',
+        'img_path': 'img_dir/val',
+        'seg_map_path': 'ann_dir/val',
+        'classes': ('background', 'bareland,barren', 'grass', 'pavement', 'road',
+                    'tree,forest', 'water,river', 'cropland', 'building,roof,house'),
+        'reduce_zero_label': False,
+        'mask_mode': 'same',
+    },
+    'loveda': {
+        'dirname': 'LoveDA',
+        'img_path': 'img_dir/val',
+        'seg_map_path': 'ann_dir/val',
+        'classes': ('background', 'building,roof,house', 'road', 'water',
+                    'barren', 'forest', 'agricultural'),
+        'reduce_zero_label': True,
+        'mask_mode': 'same',
+    },
+    'isaid': {
+        'dirname': 'iSAID',
+        'img_path': 'img_dir/val',
+        'seg_map_path': 'ann_dir/val',
+        'classes': ('background', 'ship', 'store tank', 'baseball diamond',
+                    'tennis court', 'basketball court', 'ground track field',
+                    'bridge', 'large vehicle', 'small vehicle', 'helicopter',
+                    'swimming pool', 'roundabout', 'soccer ball field',
+                    'plane', 'harbor'),
+        'reduce_zero_label': False,
+        'mask_mode': 'isaid',
+    },
+    'potsdam': {
+        'dirname': 'potsdam',
+        'img_path': 'img_dir/val',
+        'seg_map_path': 'ann_dir/val',
+        'classes': ('road,parking lot', 'building', 'low vegetation',
+                    'tree', 'car', 'clutter,background'),
+        'reduce_zero_label': True,
+        'mask_mode': 'same',
+    },
+    'uavid': {
+        'dirname': 'UAVid',
+        'img_path': 'img_dir/test',
+        'seg_map_path': 'ann_dir/test',
+        'classes': ('background', 'building', 'road', 'car', 'tree',
+                    'vegetation', 'human'),
+        'reduce_zero_label': False,
+        'mask_mode': 'png',
+    },
+    'udd5': {
+        'dirname': 'UDD5',
+        'img_path': 'val/src',
+        'seg_map_path': 'val/gt',
+        'classes': ('vegetation', 'building', 'road', 'vehicle', 'background'),
+        'reduce_zero_label': False,
+        'mask_mode': 'png',
+    },
+    'vaihingen': {
+        'dirname': 'vaihingen',
+        'img_path': 'img_dir/val',
+        'seg_map_path': 'ann_dir/val',
+        'classes': ('impervious surface', 'building', 'low vegetation',
+                    'tree', 'car', 'clutter'),
+        'reduce_zero_label': True,
+        'mask_mode': 'same',
+    },
+    'vdd': {
+        'dirname': 'VDD',
+        'img_path': 'test/src',
+        'seg_map_path': 'test/gt',
+        'classes': ('background', 'facade', 'road', 'vegetation',
+                    'vehicle', 'roof', 'water'),
+        'reduce_zero_label': False,
+        'mask_mode': 'png',
+    },
+    'whu_aerial': {
+        'dirname': 'WHU-BD',
+        'img_path': 'val/image',
+        'seg_map_path': 'val/label_cvt',
+        'classes': ('background', 'building'),
+        'reduce_zero_label': False,
+        'mask_mode': 'same',
+    },
+    'whu_sat': {
+        'dirname': 'WHU_Sat',
+        'img_path': 'Satellite_dataset/cropped/test/image',
+        'seg_map_path': 'Satellite_dataset/cropped/test/label_cvt',
+        'classes': ('background', 'building'),
+        'reduce_zero_label': False,
+        'mask_mode': 'same',
+    },
+    'inria': {
+        'dirname': 'Inria',
+        'img_path': 'img_dir/split_test',
+        'seg_map_path': 'ann_dir/split_test',
+        'classes': ('background', 'building'),
+        'reduce_zero_label': False,
+        'mask_mode': 'same',
+    },
+    'xbd': {
+        'dirname': 'xBD',
+        'img_path': 'test/images_pre',
+        'seg_map_path': 'test/targets_cvt_pre',
+        'classes': ('background', 'building'),
+        'reduce_zero_label': False,
+        'mask_mode': 'same',
+    },
+    'chn6-cug': {
+        'dirname': 'CHN6-CUG',
+        'img_path': 'val/image_cvt',
+        'seg_map_path': 'val/label_cvt',
+        'classes': ('background', 'road'),
+        'reduce_zero_label': False,
+        'mask_mode': 'png',
+    },
+    'deepglobe': {
+        'dirname': 'DeepGlobe',
+        'img_path': 'image_cvt',
+        'seg_map_path': 'label_cvt',
+        'classes': ('background', 'road'),
+        'reduce_zero_label': False,
+        'mask_mode': 'png',
+    },
+    'massachusetts': {
+        'dirname': 'GlobalRoadSet_Val',
+        'img_path': 'Massachusetts_test_49/img',
+        'seg_map_path': 'Massachusetts_test_49/label_cvt',
+        'classes': ('background', 'road'),
+        'reduce_zero_label': False,
+        'mask_mode': 'png',
+    },
+    'spacenet': {
+        'dirname': 'GlobalRoadSet_Val',
+        'img_path': 'SpaceNet_test_567/img',
+        'seg_map_path': 'SpaceNet_test_567/label_cvt',
+        'classes': ('background', 'road'),
+        'reduce_zero_label': False,
+        'mask_mode': 'png',
+    },
+    'wbs_si': {
+        'dirname': 'WBS-SI',
+        'img_path': 'Images',
+        'seg_map_path': 'Masks_cvt',
+        'classes': ('background', 'water'),
+        'reduce_zero_label': False,
+        'mask_mode': 'same',
+    },
+}
+
+
+_TMPA_BASE_PALETTE = [
+    [0, 0, 0], [255, 0, 0], [0, 255, 0], [0, 0, 255],
+    [255, 255, 0], [255, 0, 255], [0, 255, 255], [128, 64, 128],
+    [244, 35, 232], [70, 70, 70], [102, 102, 156], [190, 153, 153],
+    [153, 153, 153], [250, 170, 30], [220, 220, 0], [107, 142, 35],
+]
+
+
+def _tmpa_palette(num_classes):
+    return [_TMPA_BASE_PALETTE[i % len(_TMPA_BASE_PALETTE)] for i in range(num_classes)]
+
+
+@DATASETS.register_module()
+class TMPARemoteDataset(BaseSegDataset):
+    """Dataset wrapper that mirrors TMPA's remote-sensing data loader.
+
+    The wrapper intentionally keeps TMPA's dataset IDs and filename rules so
+    the same data root can be reused by DAF without reorganizing files.
+    """
+
+    METAINFO = dict(classes=(), palette=[])
+    class_extensions = None
+    extentions_to_real_class_idx = None
+
+    def __init__(self, tmpa_set_id, **kwargs):
+        if tmpa_set_id not in TMPA_REMOTE_SPECS:
+            raise ValueError(
+                f"Unknown TMPA dataset id: {tmpa_set_id}. "
+                f"Choose from {sorted(TMPA_REMOTE_SPECS)}"
+            )
+        self.tmpa_set_id = tmpa_set_id
+        self.tmpa_spec = TMPA_REMOTE_SPECS[tmpa_set_id]
+
+        metainfo = dict(
+            classes=self.tmpa_spec['classes'],
+            palette=_tmpa_palette(len(self.tmpa_spec['classes'])),
+        )
+        user_metainfo = kwargs.pop('metainfo', None)
+        if user_metainfo:
+            metainfo.update(user_metainfo)
+
+        super().__init__(
+            img_suffix='',
+            seg_map_suffix='',
+            reduce_zero_label=self.tmpa_spec['reduce_zero_label'],
+            metainfo=metainfo,
+            **kwargs,
+        )
+
+    def _mask_filename(self, image_filename):
+        stem, _ = osp.splitext(image_filename)
+        mode = self.tmpa_spec['mask_mode']
+        if mode == 'isaid':
+            return stem + '_instance_color_RGB.png'
+        if mode == 'png':
+            return stem + '.png'
+        return image_filename
+
+    def load_data_list(self):
+        data_list = []
+        img_dir = self.data_prefix.get('img_path', None)
+        ann_dir = self.data_prefix.get('seg_map_path', None)
+        valid_extensions = ('.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff', '.webp')
+
+        for image_filename in fileio.list_dir_or_file(
+                dir_path=img_dir,
+                list_dir=False,
+                recursive=False,
+                backend_args=self.backend_args):
+            if not image_filename.lower().endswith(valid_extensions):
+                continue
+
+            data_info = dict(img_path=osp.join(img_dir, image_filename))
+            if ann_dir is not None:
+                data_info['seg_map_path'] = osp.join(
+                    ann_dir, self._mask_filename(image_filename)
+                )
+            data_info['label_map'] = self.label_map
+            data_info['reduce_zero_label'] = self.reduce_zero_label
+            data_info['seg_fields'] = []
+            data_list.append(data_info)
+
+        return sorted(data_list, key=lambda item: item['img_path'])
+
+
 CLIP_MEAN = [122.7709, 116.7460, 104.0937]
 CLIP_STD  = [68.5005, 66.6322, 70.3232]
 
@@ -943,7 +1181,7 @@ mm_dutuseg4_cfg = {
 
 
 
-def prepare_data(dataset, data_dir, init_resize, patch_size, patch_stride, corruption="original", batch_size=128, num_workers=1, shuffle=True):
+def prepare_data(dataset, data_dir, init_resize, patch_size, patch_stride, corruption="original", batch_size=128, num_workers=1, shuffle=True, corruption_severity=5, tmpa_resolution=448, tmpa_crop_size=224, tmpa_crop_stride=112):
     
     # # print everything
     # print("\n+++++++ Data Preparation +++++++")
@@ -958,10 +1196,41 @@ def prepare_data(dataset, data_dir, init_resize, patch_size, patch_stride, corru
     # print("----------------------------------------")
 
 
-    if init_resize is None:
+    is_tmpa_dataset = dataset in TMPA_REMOTE_SPECS
+
+    if init_resize is None and not is_tmpa_dataset:
         assert batch_size == 1, "Batch size must be 1 if init_resize is None"
 
-    if dataset == "COCOStuffDataset":
+    # For TMPA datasets, DAF follows TMPA's data protocol directly instead of
+    # reusing DAF's generic resize/patch settings:
+    #   resize to resolution x resolution (default 448 x 448),
+    #   sliding crops 224 x 224 with stride 112,
+    #   deterministic dataset order, and original-resolution metrics.
+    if is_tmpa_dataset:
+        effective_resize = (tmpa_resolution, tmpa_resolution)
+        effective_patch_size = (tmpa_crop_size, tmpa_crop_size)
+        effective_patch_stride = tmpa_crop_stride
+        spec = TMPA_REMOTE_SPECS[dataset]
+        mm_config = {
+            'type': 'TMPARemoteDataset',
+            'tmpa_set_id': dataset,
+            'data_root': data_dir,
+            'data_prefix': {
+                'img_path': osp.join(spec['dirname'], spec['img_path']),
+                'seg_map_path': osp.join(spec['dirname'], spec['seg_map_path']),
+            },
+            'pipeline': [
+                {'type': 'LoadImageFromFile'},
+                {'type': 'BGR2RGB'},
+                {'type': 'LoadAnnotations', 'reduce_zero_label': spec['reduce_zero_label']},
+                {'type': 'PreserveOriginalGT'},
+                {'type': 'ResizeAndPatchify', 'resize': effective_resize,
+                 'patch_size': effective_patch_size, 'patch_stride': effective_patch_stride},
+                {'type': 'ToTensorAndNormalize', 'mean': CLIP_MEAN, 'std': CLIP_STD,
+                 'bgr_to_rgb': False},
+            ],
+        }
+    elif dataset == "COCOStuffDataset":
         mm_config = copy.deepcopy(mm_cocostuff_cfg)
     elif dataset == "COCOStuff10kDataset":
         mm_config = copy.deepcopy(mm_cocostuff10k_cfg)
@@ -1074,9 +1343,24 @@ def prepare_data(dataset, data_dir, init_resize, patch_size, patch_stride, corru
     ### add specified configs
     
     mm_config['data_root'] = data_dir
-    mm_config['pipeline'][2]['resize'] = init_resize
-    mm_config['pipeline'][2]['patch_size'] = patch_size
-    mm_config['pipeline'][2]['patch_stride'] = patch_stride
+
+    # Locate ResizeAndPatchify by type instead of relying on a fixed pipeline index.
+    # TMPA-compatible datasets insert PreserveOriginalGT before resizing.
+    resize_patch_transform = next(
+        (transform for transform in mm_config['pipeline']
+         if transform['type'] == 'ResizeAndPatchify'),
+        None
+    )
+    if resize_patch_transform is None:
+        raise ValueError("ResizeAndPatchify not found in the dataset pipeline")
+    if is_tmpa_dataset:
+        resize_patch_transform['resize'] = effective_resize
+        resize_patch_transform['patch_size'] = effective_patch_size
+        resize_patch_transform['patch_stride'] = effective_patch_stride
+    else:
+        resize_patch_transform['resize'] = init_resize
+        resize_patch_transform['patch_size'] = patch_size
+        resize_patch_transform['patch_stride'] = patch_stride
 
 
     ### add corruption to the pipline
@@ -1085,17 +1369,26 @@ def prepare_data(dataset, data_dir, init_resize, patch_size, patch_stride, corru
         print(f"No synthetic corruption added to the pipeline (corruption={corruption})")
     else:
         load_image_index = next(
-            (i for i, transform in enumerate(mm_config['pipeline']) if transform['type'] == 'LoadImageFromFile'),
+            (i for i, transform in enumerate(mm_config['pipeline'])
+             if transform['type'] == 'LoadImageFromFile'),
             None
-        )  
-        # Insert the new transform right after 'LoadImageFromFile'
+        )
         if load_image_index is not None:
             corrupt_transform = {
                 'type': 'CorruptTransform',
-                'corruption_severity': 5,
+                'corruption_severity': corruption_severity,
                 'corruption_name': corruption
             }
-            mm_config['pipeline'].insert(load_image_index + 1, corrupt_transform)
+
+            # TMPA starts from RGB PIL images. Its DAF-compatible branch converts
+            # MMCV BGR -> RGB first, then applies corruption in RGB space.
+            rgb_index = next(
+                (i for i, transform in enumerate(mm_config['pipeline'])
+                 if transform['type'] == 'BGR2RGB'),
+                None
+            )
+            insert_after = rgb_index if rgb_index is not None else load_image_index
+            mm_config['pipeline'].insert(insert_after + 1, corrupt_transform)
 
             print(f"+ Corruption '{corruption}' added to the pipeline")
         else:
@@ -1112,11 +1405,15 @@ def prepare_data(dataset, data_dir, init_resize, patch_size, patch_stride, corru
     
     persistent_workers = False
 
-    dataloader = DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, 
+    # TMPA evaluates remote-sensing validation/test sets in deterministic file order.
+    if isinstance(dataset, TMPARemoteDataset):
+        shuffle = False
+
+    dataloader = DataLoader(dataset, batch_size=batch_size, num_workers=num_workers,
                             collate_fn=custom_collate, persistent_workers=persistent_workers, pin_memory=True,
                             shuffle=shuffle)
 
-    classes = dataset.METAINFO['classes']
+    classes = dataset.metainfo['classes']
 
     return dataloader, classes
 

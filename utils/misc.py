@@ -192,7 +192,8 @@ def get_cls_idx(path):
 def custom_collate(data):
     # Extract each key from the dictionary
     imgs_list = [item['img'] for item in data] # we cannot stack the images as they have different sizes
-    gt_list = [item['gt_seg_map'] for item in data] # we cannot stack the images as they have different sizes
+    # TMPA-compatible datasets preserve the pre-resize GT for original-resolution metrics.
+    gt_list = [item.get('ori_gt_seg_map', item['gt_seg_map']) for item in data]
     
 
 

@@ -6,6 +6,7 @@ from .clipartt import CLIPARTT
 from .watt import WATT
 from .tent import TENT
 from .cotta import COTTA
+from .sar import SAR
 from .method import METHOD
 
 # Map methods to their classes
@@ -15,6 +16,7 @@ METHOD_CLASSES = {
     'watt': WATT,
     'tent': TENT,
     'cotta': COTTA,
+    'sar': SAR,
     'method': METHOD,
 }
 
