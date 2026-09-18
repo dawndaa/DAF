@@ -38,7 +38,7 @@ def validate_token_merge_args(args):
     if not getattr(args, 'token_merge', False):
         return
 
-    supported_methods = {'tent', 'mlmp', 'method', 'segtto'}
+    supported_methods = {'tent', 'mlmp', 'method', 'segtto', 'sar'}
     if args.method not in supported_methods:
         raise ValueError(
             f"--token_merge is only supported for methods {sorted(supported_methods)}; got {args.method}."
@@ -123,7 +123,11 @@ def argparser():
             'DrivingDataset',
             'PascalVOC20Dataset', 'PascalVOC21Dataset',
             'PascalContext59Dataset', 'PascalContext60Dataset', 'SUIM6Dataset', 'SUIM5Dataset',
-            'DUTUSEG5Dataset', 'DUTUSEG4Dataset'
+            'DUTUSEG5Dataset', 'DUTUSEG4Dataset',
+            # TMPA remote-sensing dataset IDs (kept identical to TMPA CLI names)
+            'openearthmap', 'loveda', 'isaid', 'potsdam', 'uavid', 'udd5',
+            'vaihingen', 'vdd', 'whu_aerial', 'whu_sat', 'inria', 'xbd',
+            'chn6-cug', 'deepglobe', 'massachusetts', 'spacenet', 'wbs_si'
         ),
         help='Which dataset to load'
     )
@@ -162,7 +166,14 @@ def argparser():
         nargs='+',
         type=str,
         default=None,
-        help='List of corruptions to apply for robustness (e.g., gaussian, motion_blur)'
+        help='List of corruptions to apply for robustness (e.g., gaussian_noise, motion_blur)'
+    )
+    parser.add_argument(
+        '--corruption_severity',
+        type=int,
+        default=5,
+        choices=(1, 2, 3, 4, 5),
+        help='ImageNet-C corruption severity used by CorruptTransform (1-5)'
     )
     
     # ----------------------------------------
@@ -752,6 +763,40 @@ def add_method_specific_args(parser, method):
             type=lambda x: x.lower() == 'true',
             default=False,
             help='Enable DIV diagnostic justification analysis (True/False)'
+        )
+
+
+    elif method == 'sar':
+        parser.add_argument(
+            '--sar_margin_e0',
+            type=float,
+            default=0.4,
+            help='Reliable-entropy threshold coefficient E0 = coefficient * log(num_classes)'
+        )
+        parser.add_argument(
+            '--sar_reset_constant_em',
+            type=float,
+            default=0.2,
+            help='EMA entropy threshold for SAR model recovery; set <0 to disable recovery'
+        )
+        parser.add_argument(
+            '--sar_rho',
+            type=float,
+            default=0.05,
+            help='SAM neighborhood radius used by SAR'
+        )
+        parser.add_argument(
+            '--sar_adaptive',
+            type=str2bool,
+            default=False,
+            help='Use adaptive SAM scaling in SAR (True/False)'
+        )
+        parser.add_argument(
+            '--sar_base_optimizer',
+            type=str,
+            default='sgd',
+            choices=('sgd', 'adam', 'adamw'),
+            help='Base optimizer wrapped by SAM; official SAR uses SGD'
         )
 
     elif method == 'cotta':
@@ -1520,7 +1565,8 @@ def main(args):
         data_loader, org_classes = segmentation_datasets.prepare_data(args.dataset, args.data_dir, args.init_resize,
                                                                   args.patch_size, args.patch_stride, corruption=corruption, 
                                                                   batch_size=args.batch_size, num_workers=args.workers,
-                                                                  shuffle=not getattr(args, 'save_demo', False))
+                                                                  shuffle=not getattr(args, 'save_demo', False),
+                                                                  corruption_severity=args.corruption_severity)
 
         if getattr(args, 'save_demo', False) and demo_indices is None:
             demo_indices = set(get_demo_indices(len(data_loader.dataset), args.save_k, args.seed))
@@ -2309,6 +2355,7 @@ def prepare_domain_info(args, device, corruption, c_idx):
         batch_size=args.batch_size,
         num_workers=args.workers,
         shuffle=not getattr(args, 'save_demo', False),
+        corruption_severity=args.corruption_severity,
     )
 
     if args.class_extensions and data_loader.dataset.class_extensions is not None:
