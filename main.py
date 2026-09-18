@@ -12,6 +12,7 @@ from adapt import get_method
 from utils import segmentation_datasets
 from utils.metrics import intersect_and_union, process_metrics, total_area_to_metrics
 from utils.misc import set_global_seeds, save_configuration, aggregate_pred_patches
+from utils.imagecorruptions import get_corruption_names
 from datetime import datetime
 
 _original_print = print
