@@ -175,6 +175,24 @@ def argparser():
         choices=(1, 2, 3, 4, 5),
         help='ImageNet-C corruption severity used by CorruptTransform (1-5)'
     )
+    parser.add_argument(
+        '--tmpa_resolution',
+        type=int,
+        default=448,
+        help='TMPA-compatible square resize resolution for remote-sensing datasets'
+    )
+    parser.add_argument(
+        '--tmpa_crop_size',
+        type=int,
+        default=224,
+        help='TMPA-compatible sliding-window crop size'
+    )
+    parser.add_argument(
+        '--tmpa_crop_stride',
+        type=int,
+        default=112,
+        help='TMPA-compatible sliding-window stride'
+    )
     
     # ----------------------------------------
     # Model Settings
@@ -1473,7 +1491,10 @@ def main(args):
                                                                   args.patch_size, args.patch_stride, corruption=corruption, 
                                                                   batch_size=args.batch_size, num_workers=args.workers,
                                                                   shuffle=not getattr(args, 'save_demo', False),
-                                                                  corruption_severity=args.corruption_severity)
+                                                                  corruption_severity=args.corruption_severity,
+                                                                  tmpa_resolution=args.tmpa_resolution,
+                                                                  tmpa_crop_size=args.tmpa_crop_size,
+                                                                  tmpa_crop_stride=args.tmpa_crop_stride)
 
         if getattr(args, 'save_demo', False) and demo_indices is None:
             demo_indices = set(get_demo_indices(len(data_loader.dataset), args.save_k, args.seed))
@@ -2280,6 +2301,9 @@ def prepare_domain_info(args, device, corruption, c_idx):
         num_workers=args.workers,
         shuffle=not getattr(args, 'save_demo', False),
         corruption_severity=args.corruption_severity,
+        tmpa_resolution=args.tmpa_resolution,
+        tmpa_crop_size=args.tmpa_crop_size,
+        tmpa_crop_stride=args.tmpa_crop_stride,
     )
 
     if args.class_extensions and data_loader.dataset.class_extensions is not None:
