@@ -1,0 +1,2 @@
+GitHub plugin write test.
+This file is unrelated to the project and can be safely deleted.
