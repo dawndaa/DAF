@@ -1575,6 +1575,16 @@ def main(args):
                 # calculate the metrics for each image in the batch (since the images may have different sizes)
                 for idx, (pd, gt) in enumerate(zip(reconstructed_preds, original_gts)):
 
+                    # TMPA evaluates at the original image resolution. For datasets
+                    # that preserve the pre-resize GT, restore dense logits before metrics.
+                    if pd.shape[-2:] != gt.shape[-2:]:
+                        pd = torch.nn.functional.interpolate(
+                            pd.unsqueeze(0),
+                            size=gt.shape[-2:],
+                            mode='bilinear',
+                            align_corners=False,
+                        ).squeeze(0)
+
                     # get the predictions
                     pd = pd.softmax(dim=0) # [num_org_classes, H, W]
 
@@ -2218,6 +2228,13 @@ def process_single_batch_no_adapt(args, device, adapt_method, data, domain_info,
 
     batch_results = []
     for idx, (pd, gt) in enumerate(zip(reconstructed_preds, original_gts)):
+        if pd.shape[-2:] != gt.shape[-2:]:
+            pd = torch.nn.functional.interpolate(
+                pd.unsqueeze(0),
+                size=gt.shape[-2:],
+                mode='bilinear',
+                align_corners=False,
+            ).squeeze(0)
         pd = pd.softmax(dim=0)
 
         if domain_info['ext_to_real_cls_indx'] is not None:
