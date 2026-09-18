@@ -1,4 +1,7 @@
 
+import hashlib
+import os
+
 import numpy as np  
 
 import torch
@@ -18,42 +21,127 @@ from utils.imagecorruptions import get_corruption_names
 
 @TRANSFORMS.register_module()
 class CorruptTransform(BaseTransform):
-    def __init__(self, corruption_name: str, corruption_severity: int = 5):
+    """Apply a deterministic ImageNet-C corruption with optional disk caching.
+
+    The cached value is the exact uint8 array returned by corrupt(). This keeps
+    the corruption definition unchanged while avoiding repeated expensive CPU
+    work, notably glass_blur, across SAR/TENT/other baseline runs.
+    """
+
+    CACHE_VERSION = 'v1-exact-corrupt-output'
+
+    def __init__(
+        self,
+        corruption_name: str,
+        corruption_severity: int = 5,
+        cache_dir: str = None,
+    ):
         super().__init__()
         self.corruption_name = corruption_name
         self.corruption_severity = corruption_severity
+        self.cache_dir = (
+            os.path.abspath(os.path.expanduser(cache_dir))
+            if cache_dir else None
+        )
 
         if self.corruption_name not in get_corruption_names():
-            raise ValueError(f"Corruption name {self.corruption_name} is not valid. \nchoose from {get_corruption_names()}")
+            raise ValueError(
+                f"Corruption name {self.corruption_name} is not valid. "
+                f"\nchoose from {get_corruption_names()}"
+            )
+
+        if self.cache_dir is not None:
+            self.cache_dir = os.path.join(
+                self.cache_dir,
+                self.corruption_name,
+                f"severity_{self.corruption_severity}",
+            )
+            os.makedirs(self.cache_dir, exist_ok=True)
+
+    def _cache_path(self, results: dict, img_index: int) -> str:
+        """Return a stable cache path that is invalidated if the source changes."""
+        img_path = str(results.get('img_path', ''))
+        source_signature = os.path.abspath(img_path) if img_path else ''
+
+        if img_path:
+            try:
+                stat = os.stat(img_path)
+                source_signature += f"|{stat.st_size}|{stat.st_mtime_ns}"
+            except OSError:
+                pass
+
+        key = (
+            f"{self.CACHE_VERSION}|{self.corruption_name}|"
+            f"{self.corruption_severity}|{img_index}|{source_signature}"
+        )
+        digest = hashlib.sha1(key.encode('utf-8')).hexdigest()[:20]
+        return os.path.join(self.cache_dir, f"{int(img_index):08d}_{digest}.npy")
+
+    @staticmethod
+    def _load_cache(cache_path: str, expected_shape) -> np.ndarray:
+        cached = np.load(cache_path, allow_pickle=False)
+        if cached.dtype != np.uint8:
+            raise ValueError(f"Cached corruption has dtype {cached.dtype}, expected uint8")
+        if cached.shape != expected_shape:
+            raise ValueError(
+                f"Cached corruption has shape {cached.shape}, expected {expected_shape}"
+            )
+        return cached
+
+    @staticmethod
+    def _atomic_save(cache_path: str, image: np.ndarray) -> None:
+        """Write one cache entry atomically so concurrent workers are safe."""
+        tmp_path = f"{cache_path}.tmp-{os.getpid()}"
+        try:
+            with open(tmp_path, 'wb') as handle:
+                np.save(handle, image, allow_pickle=False)
+            os.replace(tmp_path, cache_path)
+        finally:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
 
     def transform(self, results: dict) -> dict:
-        """ 
-        Args:
-            results (dict): The input data dictionary.
-        Returns:
-            dict: The corrupted data dictionary.
-
-        Note that the input image should be numpy array (bgr or rgb).
-        """
-
+        """Corrupt one image before it is resized/patched for model input."""
         img = results['img']
-        img_index = results['sample_idx']  
+        img_index = results['sample_idx']
 
+        cache_path = None
+        if self.cache_dir is not None:
+            cache_path = self._cache_path(results, img_index)
+            if os.path.isfile(cache_path):
+                try:
+                    results['img'] = self._load_cache(cache_path, img.shape)
+                    return results
+                except (OSError, ValueError):
+                    try:
+                        os.remove(cache_path)
+                    except OSError:
+                        pass
 
-        # Save the current RNG state
         rng_state = np.random.get_state()
-        
-        # Set the seed based on the index to ensure reproducibility
-        np.random.seed(img_index)
+        try:
+            np.random.seed(img_index)
+            corrupted = corrupt(
+                img,
+                severity=self.corruption_severity,
+                corruption_name=self.corruption_name,
+            )
+        finally:
+            np.random.set_state(rng_state)
 
+        results['img'] = corrupted
 
-        # Corrupt the image
-        results['img'] = corrupt(img, severity=self.corruption_severity, corruption_name=self.corruption_name)
-        
-        # Restore the original RNG state
-        np.random.set_state(rng_state)
-        
+        if cache_path is not None and not os.path.isfile(cache_path):
+            try:
+                self._atomic_save(cache_path, corrupted)
+            except OSError:
+                pass
+
         return results
+
     
 
 @TRANSFORMS.register_module()
