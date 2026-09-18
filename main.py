@@ -135,8 +135,11 @@ def argparser():
     parser.add_argument(
         '--workers',
         type=int,
-        default=0,
-        help='Number of data-loading workers'
+        default=4,
+        help=(
+            'Number of data-loading workers. Synthetic corruptions such as '
+            'glass_blur are CPU-heavy; 4 workers is a safe default.'
+        )
     )
     parser.add_argument(
         '--init_resize',
@@ -175,6 +178,20 @@ def argparser():
         default=5,
         choices=(1, 2, 3, 4, 5),
         help='ImageNet-C corruption severity used by CorruptTransform (1-5)'
+    )
+    parser.add_argument(
+        '--corruption_cache_dir',
+        type=str,
+        default='.cache/daf_corruptions',
+        help=(
+            'Shared disk cache for deterministic synthetic corruptions. '
+            'Cached uint8 outputs are reusable across SAR/TENT/other baselines.'
+        )
+    )
+    parser.add_argument(
+        '--disable_corruption_cache',
+        action='store_true',
+        help='Disable disk caching of synthetic corruption outputs.'
     )
     parser.add_argument(
         '--tmpa_resolution',
@@ -1501,7 +1518,11 @@ def main(args):
                                                                   corruption_severity=args.corruption_severity,
                                                                   tmpa_resolution=args.tmpa_resolution,
                                                                   tmpa_crop_size=args.tmpa_crop_size,
-                                                                  tmpa_crop_stride=args.tmpa_crop_stride)
+                                                                  tmpa_crop_stride=args.tmpa_crop_stride,
+                                                                  corruption_cache_dir=(
+                                                                      None if args.disable_corruption_cache
+                                                                      else args.corruption_cache_dir
+                                                                  ))
 
         if getattr(args, 'save_demo', False) and demo_indices is None:
             demo_indices = set(get_demo_indices(len(data_loader.dataset), args.save_k, args.seed))
