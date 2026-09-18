@@ -1181,7 +1181,7 @@ mm_dutuseg4_cfg = {
 
 
 
-def prepare_data(dataset, data_dir, init_resize, patch_size, patch_stride, corruption="original", batch_size=128, num_workers=1, shuffle=True, corruption_severity=5):
+def prepare_data(dataset, data_dir, init_resize, patch_size, patch_stride, corruption="original", batch_size=128, num_workers=1, shuffle=True, corruption_severity=5, tmpa_resolution=448, tmpa_crop_size=224, tmpa_crop_stride=112):
     
     # # print everything
     # print("\n+++++++ Data Preparation +++++++")
@@ -1196,10 +1196,20 @@ def prepare_data(dataset, data_dir, init_resize, patch_size, patch_stride, corru
     # print("----------------------------------------")
 
 
-    if init_resize is None:
+    is_tmpa_dataset = dataset in TMPA_REMOTE_SPECS
+
+    if init_resize is None and not is_tmpa_dataset:
         assert batch_size == 1, "Batch size must be 1 if init_resize is None"
 
-    if dataset in TMPA_REMOTE_SPECS:
+    # For TMPA datasets, DAF follows TMPA's data protocol directly instead of
+    # reusing DAF's generic resize/patch settings:
+    #   resize to resolution x resolution (default 448 x 448),
+    #   sliding crops 224 x 224 with stride 112,
+    #   deterministic dataset order, and original-resolution metrics.
+    if is_tmpa_dataset:
+        effective_resize = (tmpa_resolution, tmpa_resolution)
+        effective_patch_size = (tmpa_crop_size, tmpa_crop_size)
+        effective_patch_stride = tmpa_crop_stride
         spec = TMPA_REMOTE_SPECS[dataset]
         mm_config = {
             'type': 'TMPARemoteDataset',
@@ -1213,7 +1223,8 @@ def prepare_data(dataset, data_dir, init_resize, patch_size, patch_stride, corru
                 {'type': 'LoadImageFromFile'},
                 {'type': 'LoadAnnotations', 'reduce_zero_label': spec['reduce_zero_label']},
                 {'type': 'PreserveOriginalGT'},
-                {'type': 'ResizeAndPatchify', 'resize': resize, 'patch_size': patch_size, 'patch_stride': patch_stride},
+                {'type': 'ResizeAndPatchify', 'resize': effective_resize,
+                 'patch_size': effective_patch_size, 'patch_stride': effective_patch_stride},
                 {'type': 'ToTensorAndNormalize', 'mean': CLIP_MEAN, 'std': CLIP_STD},
             ],
         }
@@ -1340,9 +1351,14 @@ def prepare_data(dataset, data_dir, init_resize, patch_size, patch_stride, corru
     )
     if resize_patch_transform is None:
         raise ValueError("ResizeAndPatchify not found in the dataset pipeline")
-    resize_patch_transform['resize'] = init_resize
-    resize_patch_transform['patch_size'] = patch_size
-    resize_patch_transform['patch_stride'] = patch_stride
+    if is_tmpa_dataset:
+        resize_patch_transform['resize'] = effective_resize
+        resize_patch_transform['patch_size'] = effective_patch_size
+        resize_patch_transform['patch_stride'] = effective_patch_stride
+    else:
+        resize_patch_transform['resize'] = init_resize
+        resize_patch_transform['patch_size'] = patch_size
+        resize_patch_transform['patch_stride'] = patch_stride
 
 
     ### add corruption to the pipline
@@ -1379,7 +1395,7 @@ def prepare_data(dataset, data_dir, init_resize, patch_size, patch_stride, corru
     persistent_workers = False
 
     # TMPA evaluates remote-sensing validation/test sets in deterministic file order.
-    if dataset.tmpa_set_id if isinstance(dataset, TMPARemoteDataset) else False:
+    if isinstance(dataset, TMPARemoteDataset):
         shuffle = False
 
     dataloader = DataLoader(dataset, batch_size=batch_size, num_workers=num_workers,
