@@ -1181,7 +1181,7 @@ mm_dutuseg4_cfg = {
 
 
 
-def prepare_data(dataset, data_dir, init_resize, patch_size, patch_stride, corruption="original", batch_size=128, num_workers=1, shuffle=True, corruption_severity=5, tmpa_resolution=448, tmpa_crop_size=224, tmpa_crop_stride=112):
+def prepare_data(dataset, data_dir, init_resize, patch_size, patch_stride, corruption="original", batch_size=128, num_workers=1, shuffle=True, corruption_severity=5, tmpa_resolution=448, tmpa_crop_size=224, tmpa_crop_stride=112, corruption_cache_dir=None):
     
     # # print everything
     # print("\n+++++++ Data Preparation +++++++")
@@ -1374,10 +1374,15 @@ def prepare_data(dataset, data_dir, init_resize, patch_size, patch_stride, corru
             None
         )
         if load_image_index is not None:
+            corruption_cache_dataset_dir = (
+                osp.join(corruption_cache_dir, dataset)
+                if corruption_cache_dir else None
+            )
             corrupt_transform = {
                 'type': 'CorruptTransform',
                 'corruption_severity': corruption_severity,
-                'corruption_name': corruption
+                'corruption_name': corruption,
+                'cache_dir': corruption_cache_dataset_dir,
             }
 
             # TMPA starts from RGB PIL images. Its DAF-compatible branch converts
@@ -1398,20 +1403,27 @@ def prepare_data(dataset, data_dir, init_resize, patch_size, patch_stride, corru
     dataset = DATASETS.build(mm_config)
 
     ### bulid the dataloader
-    # if num_workers == 0:
-    #     persistent_workers = False
-    # else:
-    #     persistent_workers = True
-    
-    persistent_workers = False
+    # Synthetic corruptions are CPU-heavy, especially glass_blur. Multiple
+    # workers overlap corruption generation with GPU adaptation/evaluation.
+    # Persistent workers also avoid process restart when trials > 1.
+    persistent_workers = num_workers > 0
 
     # TMPA evaluates remote-sensing validation/test sets in deterministic file order.
     if isinstance(dataset, TMPARemoteDataset):
         shuffle = False
 
-    dataloader = DataLoader(dataset, batch_size=batch_size, num_workers=num_workers,
-                            collate_fn=custom_collate, persistent_workers=persistent_workers, pin_memory=True,
-                            shuffle=shuffle)
+    loader_kwargs = dict(
+        batch_size=batch_size,
+        num_workers=num_workers,
+        collate_fn=custom_collate,
+        persistent_workers=persistent_workers,
+        pin_memory=True,
+        shuffle=shuffle,
+    )
+    if num_workers > 0:
+        loader_kwargs['prefetch_factor'] = 2
+
+    dataloader = DataLoader(dataset, **loader_kwargs)
 
     classes = dataset.metainfo['classes']
 
