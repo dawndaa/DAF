@@ -1221,11 +1221,13 @@ def prepare_data(dataset, data_dir, init_resize, patch_size, patch_stride, corru
             },
             'pipeline': [
                 {'type': 'LoadImageFromFile'},
+                {'type': 'BGR2RGB'},
                 {'type': 'LoadAnnotations', 'reduce_zero_label': spec['reduce_zero_label']},
                 {'type': 'PreserveOriginalGT'},
                 {'type': 'ResizeAndPatchify', 'resize': effective_resize,
                  'patch_size': effective_patch_size, 'patch_stride': effective_patch_stride},
-                {'type': 'ToTensorAndNormalize', 'mean': CLIP_MEAN, 'std': CLIP_STD},
+                {'type': 'ToTensorAndNormalize', 'mean': CLIP_MEAN, 'std': CLIP_STD,
+                 'bgr_to_rgb': False},
             ],
         }
     elif dataset == "COCOStuffDataset":
@@ -1367,17 +1369,26 @@ def prepare_data(dataset, data_dir, init_resize, patch_size, patch_stride, corru
         print(f"No synthetic corruption added to the pipeline (corruption={corruption})")
     else:
         load_image_index = next(
-            (i for i, transform in enumerate(mm_config['pipeline']) if transform['type'] == 'LoadImageFromFile'),
+            (i for i, transform in enumerate(mm_config['pipeline'])
+             if transform['type'] == 'LoadImageFromFile'),
             None
-        )  
-        # Insert the new transform right after 'LoadImageFromFile'
+        )
         if load_image_index is not None:
             corrupt_transform = {
                 'type': 'CorruptTransform',
                 'corruption_severity': corruption_severity,
                 'corruption_name': corruption
             }
-            mm_config['pipeline'].insert(load_image_index + 1, corrupt_transform)
+
+            # TMPA starts from RGB PIL images. Its DAF-compatible branch converts
+            # MMCV BGR -> RGB first, then applies corruption in RGB space.
+            rgb_index = next(
+                (i for i, transform in enumerate(mm_config['pipeline'])
+                 if transform['type'] == 'BGR2RGB'),
+                None
+            )
+            insert_after = rgb_index if rgb_index is not None else load_image_index
+            mm_config['pipeline'].insert(insert_after + 1, corrupt_transform)
 
             print(f"+ Corruption '{corruption}' added to the pipeline")
         else:
