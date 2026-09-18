@@ -2443,7 +2443,7 @@ def process_single_batch(args, device, adapt_method, data, domain_info, demo_inf
         pd = pd.argmax(dim=0)
         pd = pd.to(gt.device)
         gt = gt[0]
-        if eval_scale < 1.0:
+        if eval_scale < 1.0 and not is_tmpa_dataset:
             target_h, target_w = scaled_img_shapes[idx]
             gt = torch.nn.functional.interpolate(
                 gt.unsqueeze(0).unsqueeze(0).float(), size=(target_h, target_w), mode='nearest'
