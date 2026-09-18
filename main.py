@@ -1576,19 +1576,42 @@ def main(args):
                 with torch.no_grad():
                     patch_preds = adapt_method.evaluate(inputs)
 
-                # compute eval scale for updownsample support
-                eval_size = getattr(adapt_method, 'eval_size', args.patch_size[0])
-                eval_scale = eval_size / args.patch_size[0]
+                # Use TMPA geometry for TMPA datasets; generic DAF geometry otherwise.
+                is_tmpa_dataset = args.dataset in segmentation_datasets.TMPA_REMOTE_SPECS
+                if is_tmpa_dataset:
+                    eval_patch_size = (args.tmpa_crop_size, args.tmpa_crop_size)
+                    eval_patch_stride = args.tmpa_crop_stride
+                    has_resize = True
+                else:
+                    eval_patch_size = tuple(args.patch_size)
+                    eval_patch_stride = args.patch_stride
+                    has_resize = bool(args.init_resize)
 
-                # aggregate the predictions to construct the final segmentation map for each image in the batch
-                if args.init_resize:
+                # compute eval scale for up/downsample support
+                eval_size = getattr(adapt_method, 'eval_size', eval_patch_size[0])
+                eval_scale = eval_size / eval_patch_size[0]
+
+                # aggregate patch predictions back to the resized image canvas
+                if has_resize:
                     if eval_scale < 1.0:
-                        scaled_patch_size = (round(args.patch_size[0] * eval_scale), round(args.patch_size[1] * eval_scale))
-                        scaled_patch_stride = round(args.patch_stride * eval_scale)
-                        scaled_img_shapes = [(round(h * eval_scale), round(w * eval_scale)) for h, w in image_shapes]
-                        reconstructed_preds = aggregate_pred_patches(patch_preds, patch_grid_shape, scaled_img_shapes, scaled_patch_size, scaled_patch_stride)
+                        scaled_patch_size = (
+                            round(eval_patch_size[0] * eval_scale),
+                            round(eval_patch_size[1] * eval_scale),
+                        )
+                        scaled_patch_stride = round(eval_patch_stride * eval_scale)
+                        scaled_img_shapes = [
+                            (round(h * eval_scale), round(w * eval_scale))
+                            for h, w in image_shapes
+                        ]
+                        reconstructed_preds = aggregate_pred_patches(
+                            patch_preds, patch_grid_shape, scaled_img_shapes,
+                            scaled_patch_size, scaled_patch_stride
+                        )
                     else:
-                        reconstructed_preds = aggregate_pred_patches(patch_preds, patch_grid_shape, image_shapes, args.patch_size, args.patch_stride)
+                        reconstructed_preds = aggregate_pred_patches(
+                            patch_preds, patch_grid_shape, image_shapes,
+                            eval_patch_size, eval_patch_stride
+                        )
                 else:
                     reconstructed_preds = patch_preds
 
@@ -1624,7 +1647,7 @@ def main(args):
 
                     # get the ground truth
                     gt = gt[0]             # [H, W]
-                    if eval_scale < 1.0:
+                    if eval_scale < 1.0 and not is_tmpa_dataset:
                         target_h, target_w = scaled_img_shapes[idx]
                         gt = torch.nn.functional.interpolate(
                             gt.unsqueeze(0).unsqueeze(0).float(), size=(target_h, target_w), mode='nearest'
@@ -2265,7 +2288,7 @@ def process_single_batch_no_adapt(args, device, adapt_method, data, domain_info,
         pd = pd.argmax(dim=0)
         pd = pd.to(gt.device)
         gt = gt[0]
-        if eval_scale < 1.0:
+        if eval_scale < 1.0 and not is_tmpa_dataset:
             target_h, target_w = scaled_img_shapes[idx]
             gt = torch.nn.functional.interpolate(
                 gt.unsqueeze(0).unsqueeze(0).float(), size=(target_h, target_w), mode='nearest'
@@ -2366,24 +2389,51 @@ def process_single_batch(args, device, adapt_method, data, domain_info, demo_inf
     with torch.no_grad():
         patch_preds = adapt_method.evaluate(inputs)
 
-    eval_size = getattr(adapt_method, 'eval_size', args.patch_size[0])
-    eval_scale = eval_size / args.patch_size[0]
+    is_tmpa_dataset = args.dataset in segmentation_datasets.TMPA_REMOTE_SPECS
+    if is_tmpa_dataset:
+        eval_patch_size = (args.tmpa_crop_size, args.tmpa_crop_size)
+        eval_patch_stride = args.tmpa_crop_stride
+        has_resize = True
+    else:
+        eval_patch_size = tuple(args.patch_size)
+        eval_patch_stride = args.patch_stride
+        has_resize = bool(args.init_resize)
 
-    if args.init_resize:
+    eval_size = getattr(adapt_method, 'eval_size', eval_patch_size[0])
+    eval_scale = eval_size / eval_patch_size[0]
+
+    if has_resize:
         if eval_scale < 1.0:
-            scaled_patch_size = (round(args.patch_size[0] * eval_scale), round(args.patch_size[1] * eval_scale))
-            scaled_patch_stride = round(args.patch_stride * eval_scale)
-            scaled_img_shapes = [(round(h * eval_scale), round(w * eval_scale)) for h, w in image_shapes]
+            scaled_patch_size = (
+                round(eval_patch_size[0] * eval_scale),
+                round(eval_patch_size[1] * eval_scale),
+            )
+            scaled_patch_stride = round(eval_patch_stride * eval_scale)
+            scaled_img_shapes = [
+                (round(h * eval_scale), round(w * eval_scale))
+                for h, w in image_shapes
+            ]
             reconstructed_preds = aggregate_pred_patches(
-                patch_preds, patch_grid_shape, scaled_img_shapes, scaled_patch_size, scaled_patch_stride)
+                patch_preds, patch_grid_shape, scaled_img_shapes,
+                scaled_patch_size, scaled_patch_stride
+            )
         else:
             reconstructed_preds = aggregate_pred_patches(
-                patch_preds, patch_grid_shape, image_shapes, args.patch_size, args.patch_stride)
+                patch_preds, patch_grid_shape, image_shapes,
+                eval_patch_size, eval_patch_stride
+            )
     else:
         reconstructed_preds = patch_preds
 
     batch_results = []
     for idx, (pd, gt) in enumerate(zip(reconstructed_preds, original_gts)):
+        if pd.shape[-2:] != gt.shape[-2:]:
+            pd = torch.nn.functional.interpolate(
+                pd.unsqueeze(0),
+                size=gt.shape[-2:],
+                mode='bilinear',
+                align_corners=False,
+            ).squeeze(0)
         pd = pd.softmax(dim=0)
 
         if domain_info['ext_to_real_cls_indx'] is not None:
