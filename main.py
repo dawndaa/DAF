@@ -2355,6 +2355,10 @@ def prepare_domain_info(args, device, corruption, c_idx):
         tmpa_resolution=args.tmpa_resolution,
         tmpa_crop_size=args.tmpa_crop_size,
         tmpa_crop_stride=args.tmpa_crop_stride,
+        corruption_cache_dir=(
+            None if args.disable_corruption_cache
+            else args.corruption_cache_dir
+        ),
     )
 
     if args.class_extensions and data_loader.dataset.class_extensions is not None:
