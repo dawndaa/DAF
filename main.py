@@ -201,14 +201,14 @@ def argparser():
     parser.add_argument(
         '--ovss_type',
         type=str,
-        default='ncalip',
-        help='Open-Vocabulary Semantic Segmentation type (e.g., nacalip, clip, clip, etc.)'
+        default='segearth',
+        help='Open-Vocabulary Semantic Segmentation type (e.g., segearth, naclip, sclip, clip)'
     )
     parser.add_argument(
         '--ovss_backbone',
         type=str,
-        default='ViT-B/32',
-        help='CLIP vision backbone (e.g., ViT-B/32, ViT-L/14)'
+        default='ViT-B/16',
+        help='CLIP vision backbone (SegEarth-OV reference: ViT-B/16)'
     )
     parser.add_argument(
         '--token_merge',
@@ -1649,7 +1649,12 @@ def main(args):
                         pd = (pd * ext_to_real_cls_indx).max(1)[0]
 
 
-                    pd = pd.argmax(dim=0)  # [H, W]
+                    pred_conf, pd = pd.max(dim=0)
+                    if getattr(adapt_method.model, 'segearth_enabled', False):
+                        prob_thd = float(getattr(adapt_method.model, 'segearth_prob_thd', 0.0))
+                        if prob_thd > 0.0:
+                            bg_idx = int(getattr(adapt_method.model, 'segearth_bg_idx', 0))
+                            pd[pred_conf < prob_thd] = bg_idx  # [H, W]
                     pd = pd.to(gt.device)  
 
                     # get the ground truth
@@ -2292,7 +2297,12 @@ def process_single_batch_no_adapt(args, device, adapt_method, data, domain_info,
             pd = pd.unsqueeze(0)
             pd = (pd * domain_info['ext_to_real_cls_indx']).max(1)[0]
 
-        pd = pd.argmax(dim=0)
+        pred_conf, pd = pd.max(dim=0)
+                    if getattr(adapt_method.model, 'segearth_enabled', False):
+                        prob_thd = float(getattr(adapt_method.model, 'segearth_prob_thd', 0.0))
+                        if prob_thd > 0.0:
+                            bg_idx = int(getattr(adapt_method.model, 'segearth_bg_idx', 0))
+                            pd[pred_conf < prob_thd] = bg_idx
         pd = pd.to(gt.device)
         gt = gt[0]
         if eval_scale < 1.0 and not is_tmpa_dataset:
@@ -2447,7 +2457,12 @@ def process_single_batch(args, device, adapt_method, data, domain_info, demo_inf
             pd = pd.unsqueeze(0)
             pd = (pd * domain_info['ext_to_real_cls_indx']).max(1)[0]
 
-        pd = pd.argmax(dim=0)
+        pred_conf, pd = pd.max(dim=0)
+                    if getattr(adapt_method.model, 'segearth_enabled', False):
+                        prob_thd = float(getattr(adapt_method.model, 'segearth_prob_thd', 0.0))
+                        if prob_thd > 0.0:
+                            bg_idx = int(getattr(adapt_method.model, 'segearth_bg_idx', 0))
+                            pd[pred_conf < prob_thd] = bg_idx
         pd = pd.to(gt.device)
         gt = gt[0]
         if eval_scale < 1.0 and not is_tmpa_dataset:
