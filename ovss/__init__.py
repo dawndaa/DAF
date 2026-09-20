@@ -4,6 +4,14 @@ from ovss.clip import tokenize as clip_tokenize
 
 CLIP_DOWNLOAD_ROOT = os.environ.get("CLIP_DOWNLOAD_ROOT", "/scratch/project_465002853/clip_cache_doloriel")
 
+_RUNTIME_DATASET = None
+
+
+def set_runtime_dataset(dataset):
+    """Set the active evaluation dataset for dataset-specific OVSS defaults."""
+    global _RUNTIME_DATASET
+    _RUNTIME_DATASET = dataset
+
 
 def load_ovss(
     ovss_type,
@@ -50,6 +58,32 @@ def load_ovss(
         gaussian_std = 5.0
         ovss_model, _ = clip.load(ovss_backbone, device, download_root=CLIP_DOWNLOAD_ROOT)
         ovss_model.visual.set_params(arch, attn_strategy, gaussian_std)
+        tokenize = clip_tokenize
+
+    elif ovss_type == 'segearth':
+        if token_merge:
+            raise ValueError(
+                "SegEarth-OV feature upsampling requires the regular ViT token grid; "
+                "--token_merge is not supported with --ovss_type segearth."
+            )
+
+        arch = "reduced"
+        attn_strategy = "segearth"
+        gaussian_std = 5.0
+        ovss_model, _ = clip.load(
+            ovss_backbone,
+            device,
+            download_root=CLIP_DOWNLOAD_ROOT,
+        )
+        ovss_model.visual.set_params(arch, attn_strategy, gaussian_std)
+
+        from ovss.segearth import configure_segearth_model
+
+        ovss_model = configure_segearth_model(
+            ovss_model,
+            dataset=_RUNTIME_DATASET,
+            device=device,
+        )
         tokenize = clip_tokenize
 
     else:
