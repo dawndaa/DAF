@@ -230,10 +230,21 @@ def build_segearth_upsampler(feat_dim, device, dtype):
 
     try:
         upsampler.load_state_dict(cleaned, strict=True)
-    except RuntimeError as exc:
-        raise RuntimeError(
-            f"Invalid SegEarth-OV JBU checkpoint: {ckpt_path}"
-        ) from exc
+    except RuntimeError:
+        # The official SegEarth-OV loader strips the first 10 characters
+        # from FeatUp checkpoint keys. Keep that exact fallback for checkpoint
+        # variants whose prefix is not literally "upsampler.".
+        stripped = {
+            key[10:]: value
+            for key, value in state_dict.items()
+            if len(key) > 10
+        }
+        try:
+            upsampler.load_state_dict(stripped, strict=True)
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"Invalid SegEarth-OV JBU checkpoint: {ckpt_path}"
+            ) from exc
 
     upsampler = upsampler.to(device=device, dtype=dtype)
     upsampler.requires_grad_(False)
