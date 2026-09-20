@@ -189,6 +189,15 @@ def _checkpoint_path():
     if override:
         return Path(override).expanduser()
 
+    # Reuse the checkpoint from a local SegEarth-OV/TMPA checkout when present.
+    for candidate in (
+        Path("simfeatup_dev/weights") / SEGEARTH_CKPT_NAME,
+        Path("../TMPA/simfeatup_dev/weights") / SEGEARTH_CKPT_NAME,
+        Path("../SegEarth-OV/simfeatup_dev/weights") / SEGEARTH_CKPT_NAME,
+    ):
+        if candidate.is_file():
+            return candidate.resolve()
+
     cache_root = Path(
         os.environ.get(
             "SEGEARTH_CACHE_ROOT",
