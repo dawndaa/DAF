@@ -228,7 +228,7 @@ class VisionTransformer(nn.Module):
     # nonly: Neighbourhood Only, kk: KK-Similarity, csa: SCLIP, vanilla: CLIP
     def set_params(self, arch, attn_strategy, gaussian_std):
         assert arch in ['reduced', 'vanilla']
-        assert attn_strategy in ['naclip', 'nonly', 'kk', 'csa', 'vanilla']
+        assert attn_strategy in ['naclip', 'nonly', 'kk', 'csa', 'vanilla', 'segearth']
         assert attn_strategy != 'csa' or arch == 'vanilla'
         assert gaussian_std > 0 or attn_strategy not in ['naclip', 'nonly']
         self.arch, self.attn_strategy, self.gaussian_std = arch, attn_strategy, gaussian_std
@@ -389,6 +389,18 @@ class VisionTransformer(nn.Module):
             q_attn = torch.bmm(q, q.transpose(1, 2)) * scale
             k_attn = torch.bmm(k, k.transpose(1, 2)) * scale
             attn_weights = F.softmax(q_attn, dim=-1) + F.softmax(k_attn, dim=-1)
+        elif attn_strategy == 'segearth':
+            # SegEarth-OV: aggregate Q-Q, K-K and V-V self-similarities in
+            # the final ViT block, while the reduced visual path discards the
+            # residual/MLP branch exactly like the official implementation.
+            q_attn = torch.bmm(q, q.transpose(1, 2)) * scale
+            k_attn = torch.bmm(k, k.transpose(1, 2)) * scale
+            v_attn = torch.bmm(v, v.transpose(1, 2)) * scale
+            attn_weights = (
+                F.softmax(q_attn, dim=-1)
+                + F.softmax(k_attn, dim=-1)
+                + F.softmax(v_attn, dim=-1)
+            )
         elif attn_strategy == 'vanilla':
             attn_weights = torch.bmm(q * scale, k.transpose(1, 2))
             attn_weights = F.softmax(attn_weights, dim=-1)
@@ -544,119 +556,293 @@ class CLIP(nn.Module):
 
         return x
 
-    def forward(self, image, text, text_ensemble=False, vision_outputs=(-1,), 
+    def _segearth_dense_logits(
+        self,
+        image,
+        image_features,
+        text_features,
+        logit_scale,
+        interpolate=False,
+    ):
+        """Build SegEarth-OV dense logits while keeping native tokens for TTA losses."""
+        native_features = F.normalize(image_features, dim=-1)
+        cls_features = native_features[:, 0]
+        patch_features = image_features[:, 1:]
+
+        patch_size = self.visual.patch_size
+        grid_h = image.shape[-2] // patch_size
+        grid_w = image.shape[-1] // patch_size
+        expected_tokens = grid_h * grid_w
+        if patch_features.shape[1] != expected_tokens:
+            raise RuntimeError(
+                "SegEarth-OV requires a regular ViT token grid: "
+                f"got {patch_features.shape[1]} tokens for {grid_h}x{grid_w}."
+            )
+
+        feature_up = bool(getattr(self, "segearth_feature_up", False))
+        if feature_up:
+            batch_size, _, feat_dim = patch_features.shape
+            feature_map = (
+                patch_features.transpose(1, 2)
+                .contiguous()
+                .reshape(batch_size, feat_dim, grid_h, grid_w)
+            )
+
+            upsampler = self.segearth_upsampler
+            # Adaptation methods can put the parent model in train mode. The
+            # official SegEarth JBU is frozen, so keep its dropout disabled.
+            upsampler.eval()
+            up_dtype = next(upsampler.parameters()).dtype
+            feature_map = feature_map.to(dtype=up_dtype)
+            guidance = image.to(dtype=up_dtype)
+            dense_features = upsampler(feature_map, guidance)
+
+            if dense_features.shape[-2:] != image.shape[-2:]:
+                dense_features = F.interpolate(
+                    dense_features,
+                    size=image.shape[-2:],
+                    mode="bilinear",
+                    align_corners=False,
+                )
+
+            out_h, out_w = dense_features.shape[-2:]
+            dense_features = F.normalize(
+                dense_features.flatten(2).transpose(1, 2),
+                dim=-1,
+            )
+            logits = logit_scale * torch.einsum(
+                "bsd,tcd->tbsc", dense_features, text_features
+            )
+            logits = logits.permute(0, 1, 3, 2).reshape(
+                text_features.shape[0],
+                image.shape[0],
+                text_features.shape[1],
+                out_h,
+                out_w,
+            )
+        else:
+            patch_features = F.normalize(patch_features, dim=-1)
+            logits = logit_scale * torch.einsum(
+                "bsd,tcd->tbsc", patch_features, text_features
+            )
+            temp_dim, batch_dim, _, out_dim = logits.shape
+            logits = logits.permute(0, 1, 3, 2).reshape(
+                temp_dim, batch_dim, out_dim, grid_h, grid_w
+            )
+            if interpolate:
+                logits = logits.reshape(-1, out_dim, grid_h, grid_w)
+                logits = F.interpolate(
+                    logits,
+                    size=image.shape[-2:],
+                    mode="bilinear",
+                    align_corners=False,
+                )
+                logits = logits.view(
+                    temp_dim,
+                    batch_dim,
+                    out_dim,
+                    image.shape[-2],
+                    image.shape[-1],
+                )
+
+        cls_logits = logit_scale * torch.einsum(
+            "bd,tcd->tbc", cls_features, text_features
+        )
+        cls_token_lambda = float(
+            getattr(self, "segearth_cls_token_lambda", -0.3)
+        )
+        if cls_token_lambda != 0.0:
+            logits = logits + cls_token_lambda * cls_logits[..., None, None]
+
+        return logits, native_features, cls_logits
+
+    def forward(self, image, text, text_ensemble=False, vision_outputs=(-1,),
                 return_vanilla_cls=False, interpolate=False, vision_out_type="mean",
                 save_weights=False, K=3, topk_equal_weights=False, return_all_cls=False):
-        
+
         logit_scale = self.logit_scale.exp()
 
         if text_ensemble:
             text_features = text
-            # text_features = text_features.T
         else:
             text_features = self.encode_text(text)
             text_features = text_features / text_features.norm(dim=-1, keepdim=True)
 
-        
         if len(text_features.shape) == 2:
-            text_features = text_features.unsqueeze(0) # (#templates, #classes, #features)
+            text_features = text_features.unsqueeze(0)
 
+        segearth_enabled = bool(getattr(self, "segearth_enabled", False))
 
         if vision_out_type == "mean":
             if return_vanilla_cls:
-                image_features, vanilla_cls_features = self.encode_image(image, vision_outputs, return_vanilla_cls, out_type="mean")
+                image_features, vanilla_cls_features = self.encode_image(
+                    image,
+                    vision_outputs,
+                    return_vanilla_cls,
+                    out_type="mean",
+                )
             else:
-                image_features = self.encode_image(image, vision_outputs, return_vanilla_cls, out_type="mean")
+                image_features = self.encode_image(
+                    image,
+                    vision_outputs,
+                    return_vanilla_cls,
+                    out_type="mean",
+                )
 
-            image_features = image_features / image_features.norm(dim=-1, keepdim=True) 
-            logits = logit_scale * torch.einsum('bsd,tcd->tbsc', image_features, text_features) # (#templates, batch_size, tokens, #classes)
+            if segearth_enabled:
+                logits, image_features, all_cls = self._segearth_dense_logits(
+                    image,
+                    image_features,
+                    text_features,
+                    logit_scale,
+                    interpolate=interpolate,
+                )
+            else:
+                image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+                token_logits = logit_scale * torch.einsum(
+                    "bsd,tcd->tbsc", image_features, text_features
+                )
+                all_cls = token_logits[:, :, 0]
+                logits = token_logits[:, :, 1:]
 
-            logits = logits[:, :, 1:] # (#templates, batch_size, tokens, #classes)
-            all_cls = logits[:, :, 0] # (#templates, batch_size, #classes)
+                patch_size = self.visual.patch_size
+                w = image.shape[-2] // patch_size
+                h = image.shape[-1] // patch_size
+                temp_dim = logits.shape[0]
+                b_dim = logits.shape[1]
+                out_dim = logits.shape[-1]
+                logits = logits.permute(0, 1, 3, 2).reshape(
+                    temp_dim, b_dim, out_dim, w, h
+                )
 
-            patch_size = self.visual.patch_size
-            w, h = image[0].shape[-2] // patch_size, image[0].shape[-1] // patch_size
-            temp_dim = logits.shape[0]
-            b_dim = logits.shape[1]
-            out_dim = logits.shape[-1]
-            logits = logits.permute(0, 1, 3, 2).reshape(logits.shape[0], logits.shape[1], out_dim, w, h) # (#templates, batch_size, #class, W, H)
-            
-            if interpolate:
-                # Perform interpolation
-                logits = logits.reshape(-1, out_dim, w, h)  # Flatten templates and batch dimensions for interpolation
-                logits = nn.functional.interpolate(logits, size=image.shape[-2:], mode='bilinear', align_corners=False)  # (#templates*batch_size, #class, W', H')
-
-                # Reshape back to include template and batch dimensions
-                logits = logits.view(temp_dim, b_dim, out_dim, image.shape[-2], image.shape[-1])  # (#templates, batch_size, #class, W', H')
+                if interpolate:
+                    logits = logits.reshape(-1, out_dim, w, h)
+                    logits = F.interpolate(
+                        logits,
+                        size=image.shape[-2:],
+                        mode="bilinear",
+                        align_corners=False,
+                    )
+                    logits = logits.view(
+                        temp_dim,
+                        b_dim,
+                        out_dim,
+                        image.shape[-2],
+                        image.shape[-1],
+                    )
 
             if return_vanilla_cls:
-                vanilla_cls_features = vanilla_cls_features / vanilla_cls_features.norm(dim=-1, keepdim=True)
-                vanilla_cls_logits = logit_scale * torch.einsum('bd,tcd->tbc', vanilla_cls_features, text_features) # (#templates, batch_size, #classes)
+                vanilla_cls_features = vanilla_cls_features / vanilla_cls_features.norm(
+                    dim=-1, keepdim=True
+                )
+                vanilla_cls_logits = logit_scale * torch.einsum(
+                    "bd,tcd->tbc", vanilla_cls_features, text_features
+                )
                 return logits, image_features, text_features, vanilla_cls_logits
-            elif return_all_cls:
+            if return_all_cls:
                 return logits, image_features, text_features, all_cls
-            
             return logits, image_features, text_features
-        
+
         elif vision_out_type == "adaptive_weighted_mean":
-            image_features = self.encode_image(image, vision_outputs, return_vanilla_cls, out_type="all")
-            image_features = image_features / image_features.norm(dim=-1, keepdim=True)  # (#outlayers, batch_size, tokens, #features)
-            logits = logit_scale * torch.einsum('obsd,tcd->otbsc', image_features, text_features) # (#outlayers, #templates, batch_size, tokens, #classes)
+            if return_vanilla_cls:
+                layer_features, vanilla_cls_features = self.encode_image(
+                    image,
+                    vision_outputs,
+                    return_vanilla_cls,
+                    out_type="all",
+                )
+            else:
+                layer_features = self.encode_image(
+                    image,
+                    vision_outputs,
+                    return_vanilla_cls,
+                    out_type="all",
+                )
 
-            logits = logits[:, :, :, 1:] # (#outlayers, #templates, batch_size, tokens, #classes)
-
-            patch_size = self.visual.patch_size
-            w, h = image[0].shape[-2] // patch_size, image[0].shape[-1] // patch_size
-            layers_dim = logits.shape[0]
-            temp_dim = logits.shape[1]
-            b_dim = logits.shape[2]
-            out_dim = logits.shape[-1]
-            # logits = logits.permute(0, 2, 1).reshape(-1, out_dim, w, h) # (batch_size, #class, W, H)
-            logits = logits.permute(0, 1, 2, 4, 3).reshape(logits.shape[0], logits.shape[1], logits.shape[2], out_dim, w, h) # (#outlayers, #templates, batch_size, #class, W, H)
-            
-            # now we can calcualte the entropy weighted logits
-            ent = -(logits.softmax(-3) * logits.log_softmax(-3)).sum(-3) # (#outlayers, #templates, batch_size, W', H')
-
-            # mean over templates, W, H
-            ent_weights = torch.mean(ent, dim=[1, 3, 4]) # (#outlayers, batch_size)
-
-            # Invert entropy to prioritize confident layers
-            ent_weights = -ent_weights  # Flip the relationship: lower entropy -> larger weight
-
-            # softmax over outlayers
-            ent_weights = F.softmax(ent_weights, dim=0) # (#outlayers, batch_size)
-
-            # save the entropy weights to a list (detach them to avoid backpropagation)
-            if save_weights: # just to be sure the weights are saved only during evaluation
-                self.weights_track.append(ent_weights.detach().cpu().numpy()) # (#outlayers, batch_size)
-
-            # now recalcualte the logits based on the entropy weights
-            image_features = self.encode_image(image, vision_outputs, return_vanilla_cls, out_type="weighted_mean", weights=ent_weights) # (batch_size, tokens, #features)
-            image_features = image_features / image_features.norm(dim=-1, keepdim=True) 
-            logits = logit_scale * torch.einsum('bsd,tcd->tbsc', image_features, text_features) # (#templates, batch_size, tokens, #classes)
-            logits = logits[:, :, 1:] # (#templates, batch_size, tokens, #classes)
+            norm_layer_features = F.normalize(layer_features, dim=-1)
+            layer_logits = logit_scale * torch.einsum(
+                "obsd,tcd->otbsc", norm_layer_features, text_features
+            )
+            layer_logits = layer_logits[:, :, :, 1:]
 
             patch_size = self.visual.patch_size
-            w, h = image[0].shape[-2] // patch_size, image[0].shape[-1] // patch_size
-            temp_dim = logits.shape[0]
-            b_dim = logits.shape[1]
-            out_dim = logits.shape[-1]
-            logits = logits.permute(0, 1, 3, 2).reshape(logits.shape[0], logits.shape[1], out_dim, w, h) # (#templates, batch_size, #class, W, H)
-            
-            if interpolate:
-                # Perform interpolation
-                logits = logits.reshape(-1, out_dim, w, h)  # Flatten templates and batch dimensions for interpolation
-                logits = nn.functional.interpolate(logits, size=image.shape[-2:], mode='bilinear', align_corners=False)  # (#templates*batch_size, #class, W', H')
+            w = image.shape[-2] // patch_size
+            h = image.shape[-1] // patch_size
+            out_dim = layer_logits.shape[-1]
+            layer_logits = layer_logits.permute(0, 1, 2, 4, 3).reshape(
+                layer_logits.shape[0],
+                layer_logits.shape[1],
+                layer_logits.shape[2],
+                out_dim,
+                w,
+                h,
+            )
 
-                # Reshape back to include template and batch dimensions
-                logits = logits.view(temp_dim, b_dim, out_dim, image.shape[-2], image.shape[-1])  # (#templates, batch_size, #class, W', H')
+            ent = -(
+                layer_logits.softmax(-3) * layer_logits.log_softmax(-3)
+            ).sum(-3)
+            ent_weights = torch.mean(ent, dim=[1, 3, 4])
+            ent_weights = F.softmax(-ent_weights, dim=0)
+
+            if save_weights:
+                self.weights_track.append(ent_weights.detach().cpu().numpy())
+
+            image_features = self.encode_image(
+                image,
+                vision_outputs,
+                False,
+                out_type="weighted_mean",
+                weights=ent_weights,
+            )
+
+            if segearth_enabled:
+                logits, image_features, _ = self._segearth_dense_logits(
+                    image,
+                    image_features,
+                    text_features,
+                    logit_scale,
+                    interpolate=interpolate,
+                )
+            else:
+                image_features = F.normalize(image_features, dim=-1)
+                logits = logit_scale * torch.einsum(
+                    "bsd,tcd->tbsc", image_features, text_features
+                )
+                logits = logits[:, :, 1:]
+
+                temp_dim = logits.shape[0]
+                b_dim = logits.shape[1]
+                out_dim = logits.shape[-1]
+                logits = logits.permute(0, 1, 3, 2).reshape(
+                    temp_dim, b_dim, out_dim, w, h
+                )
+                if interpolate:
+                    logits = logits.reshape(-1, out_dim, w, h)
+                    logits = F.interpolate(
+                        logits,
+                        size=image.shape[-2:],
+                        mode="bilinear",
+                        align_corners=False,
+                    )
+                    logits = logits.view(
+                        temp_dim,
+                        b_dim,
+                        out_dim,
+                        image.shape[-2],
+                        image.shape[-1],
+                    )
 
             if return_vanilla_cls:
-                vanilla_cls_features = vanilla_cls_features / vanilla_cls_features.norm(dim=-1, keepdim=True)
-                vanilla_cls_logits = logit_scale * torch.einsum('bd,tcd->tbc', vanilla_cls_features, text_features) # (#templates, batch_size, #classes)
+                vanilla_cls_features = F.normalize(
+                    vanilla_cls_features, dim=-1
+                )
+                vanilla_cls_logits = logit_scale * torch.einsum(
+                    "bd,tcd->tbc", vanilla_cls_features, text_features
+                )
                 return logits, image_features, text_features, vanilla_cls_logits
-            
             return logits, image_features, text_features
+
+        raise ValueError(f"Unsupported vision_out_type: {vision_out_type}")
 
 def convert_weights(model: nn.Module):
     """Convert applicable model parameters to fp16"""
