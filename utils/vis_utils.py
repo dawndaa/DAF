@@ -43,7 +43,7 @@ def colorize_mask(mask, palette, ignore_index: int = 255) -> np.ndarray:
 
 def _save_label(mask, path: Path) -> None:
     mask_np = _to_mask_numpy(mask)
-    if mask_np.min(initial=0) < 0 or mask_np.max(initial=0) > 255:
+    if mask_np.size and (mask_np.min() < 0 or mask_np.max() > 255):
         Image.fromarray(mask_np.astype(np.int32), mode="I").save(path)
     else:
         Image.fromarray(mask_np.astype(np.uint8), mode="L").save(path)
