@@ -36,6 +36,24 @@ Please follow the [MMSeg data preparation document](https://github.com/open-mmla
 Additionally, inspired by [ImageNet-C](https://github.com/hendrycks/robustness), we generate 15 corruption types (e.g., noise, blur, weather, compression) *on-the-fly* at test time, allowing us to effectively evaluate each adaptation method's robustness to diverse distribution shifts. 
 
 
+### SegEarth-OV base model on this branch
+
+This branch uses **SegEarth-OV (CLIP ViT-B/16)** as the shared OVSS base model
+for TENT, SAR, CoTTA, MLMP, CLIPArTT, WATT, and DAF/METHOD. The adaptation
+algorithms are unchanged; only their common OVSS backbone is replaced.
+
+The SegEarth-OV path includes the reference Q-Q/K-K/V-V attention, frozen JBU
+feature upsampling, class-token fusion, and dataset-specific inference settings.
+The official `xclip_jbu_one_million_aid.ckpt` is downloaded on first use. To
+use an existing local copy instead:
+
+```bash
+export SEGEARTH_UPSAMPLER_CKPT=/path/to/xclip_jbu_one_million_aid.ckpt
+```
+
+`--token_merge` is intentionally unsupported for SegEarth-OV because JBU
+requires the regular ViT patch grid.
+
 ### TMPA-compatible remote-sensing evaluation
 
 DAF can directly reuse the remote-sensing dataset layout used by
@@ -73,7 +91,7 @@ python main.py \
   --tmpa_resolution 448 \
   --tmpa_crop_size 224 \
   --tmpa_crop_stride 112 \
-  --ovss_type naclip \
+  --ovss_type segearth \
   --ovss_backbone ViT-B/16 \
   --lr 1e-4 \
   --steps 1 \
@@ -109,8 +127,8 @@ python main.py \
     --prompt_dir prompts.yaml \
     --vision_outputs -1 -2 -3 -4 -5 -6 -7 -8 -9 \
     --alpha_cls 1.0 \
-    --ovss_type naclip \
-    --ovss_backbone ViT-B/32 \
+    --ovss_type segearth \
+    --ovss_backbone ViT-B/16 \
     --token_merge False --merge_type algm \
     --algm_layers 1 7 --algm_threshold 0.8 --algm_window_size 2 2 \
     --save_dir .save/PascalVOC20Dataset/dafm/ \
@@ -140,3 +158,5 @@ To use TENT instead, change `--method mlmp` to `--method tent` and remove the ML
 This source code is released under the MIT license, which can be found [here](LICENCE). This project integrates elements from the following repositories; we gratefully acknowledge the authors for making their work open-source:
 - [MLMP](https://github.com/dosowiechi/MLMP) (MIT licensed)
 - [TENT](https://github.com/DequanWang/tent) (MIT licensed)
+
+- [SegEarth-OV](https://github.com/likyoo/SegEarth-OV) (base OVSS model used on `feature/segearth-ov-baselines`)
