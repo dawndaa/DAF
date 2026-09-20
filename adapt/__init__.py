@@ -1,6 +1,8 @@
 import inspect
 from pprint import pprint
 
+from ovss import set_runtime_dataset
+
 from .mlmp import MLMP
 from .clipartt import CLIPARTT
 from .watt import WATT
@@ -53,6 +55,8 @@ def get_method(args, device):
     # print("----------------------------------------")
 
     # Instantiate the class with relevant arguments
+    set_runtime_dataset(getattr(args, 'dataset', None))
+
     return method_class(**method_args)
 
 
