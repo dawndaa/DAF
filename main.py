@@ -13,6 +13,7 @@ from utils import segmentation_datasets
 from utils.metrics import intersect_and_union, process_metrics, total_area_to_metrics
 from utils.misc import set_global_seeds, save_configuration, aggregate_pred_patches
 from utils.imagecorruptions import get_corruption_names
+from utils.vis_utils import should_save_vis, save_remote_visualization
 from datetime import datetime
 
 _original_print = print
@@ -379,6 +380,26 @@ def argparser():
         type=int,
         default=5,
         help='Number of random demo images to save per corruption domain when --save_demo is True'
+    )
+    parser.add_argument(
+        '--save_vis',
+        action='store_true',
+        help=(
+            'Save interval-sampled qualitative outputs for TMPA-compatible remote datasets: '
+            'clean/corrupted input, GT, and prediction.'
+        )
+    )
+    parser.add_argument(
+        '--vis_interval',
+        type=int,
+        default=48,
+        help='Save one qualitative sample every N images when --save_vis is enabled.'
+    )
+    parser.add_argument(
+        '--vis_dir',
+        type=str,
+        default='visualizations',
+        help='Root directory for interval qualitative outputs.'
     )
 
     return parser
@@ -1470,6 +1491,15 @@ def main(args):
 
     validate_token_merge_args(args)
 
+    if getattr(args, 'save_vis', False):
+        if args.vis_interval <= 0:
+            raise ValueError(f"--vis_interval must be > 0, got {args.vis_interval}")
+        if args.dataset not in segmentation_datasets.TMPA_REMOTE_SPECS:
+            raise ValueError(
+                "--save_vis currently targets TMPA-compatible remote datasets so that "
+                "the saved corruption exactly matches the RGB corruption protocol."
+            )
+
     # Convenience alias for the 15 standard ImageNet-C corruptions.
     if args.corruptions_list == ['imagenet_c']:
         args.corruptions_list = get_corruption_names('common')
@@ -1514,7 +1544,7 @@ def main(args):
         data_loader, org_classes = segmentation_datasets.prepare_data(args.dataset, args.data_dir, args.init_resize,
                                                                   args.patch_size, args.patch_stride, corruption=corruption, 
                                                                   batch_size=args.batch_size, num_workers=args.workers,
-                                                                  shuffle=not getattr(args, 'save_demo', False),
+                                                                  shuffle=not (getattr(args, 'save_demo', False) or getattr(args, 'save_vis', False)),
                                                                   corruption_severity=args.corruption_severity,
                                                                   tmpa_resolution=args.tmpa_resolution,
                                                                   tmpa_crop_size=args.tmpa_crop_size,
@@ -1688,6 +1718,26 @@ def main(args):
                         parts = img_path.split('/')
                         condition = next((parts[i+1] for i, p in enumerate(parts) if p == 'rgb_anon' and i+1 < len(parts)), None)
                         sample_conditions.append(condition)
+
+                    if (
+                        getattr(args, 'save_vis', False)
+                        and t == 0
+                        and should_save_vis(global_sample_idx, args.vis_interval)
+                    ):
+                        vis_path = save_remote_visualization(
+                            vis_root=args.vis_dir,
+                            dataset=args.dataset,
+                            corruption=corruption,
+                            severity=args.corruption_severity,
+                            sample_idx=global_sample_idx,
+                            image_path=data['meta']['img_path'][idx],
+                            pred=pd,
+                            gt=gt,
+                            palette=data_loader.dataset.metainfo['palette'],
+                            method_name=get_demo_method_name(args),
+                            ignore_index=ignore_index,
+                        )
+                        print(f"+++ Vis: saved {vis_path}")
 
                     # save demo overlay
                     if getattr(args, 'save_demo', False) and global_sample_idx in demo_indices:
@@ -1979,14 +2029,21 @@ def run_domain_gen(args, device, start_time, all_results_path):
     args.classes = domain_infos[0]['classes']
 
     demo_info = None
-    if getattr(args, 'save_demo', False):
-        demo_indices = set(get_demo_indices(len(domain_infos[0]['data_loader'].dataset), args.save_k, args.seed))
+    if getattr(args, 'save_demo', False) or getattr(args, 'save_vis', False):
+        demo_indices = (
+            set(get_demo_indices(len(domain_infos[0]['data_loader'].dataset), args.save_k, args.seed))
+            if getattr(args, 'save_demo', False) else set()
+        )
         demo_info = {
             'indices': demo_indices,
             'palette': domain_infos[0]['data_loader'].dataset.metainfo['palette'],
             'global_sample_idx': 0,
+            'save_vis': bool(getattr(args, 'save_vis', False)),
         }
-        print(f"+++ Demo: saving {len(demo_indices)} images per corruption")
+        if getattr(args, 'save_demo', False):
+            print(f"+++ Demo: saving {len(demo_indices)} images per corruption")
+        if getattr(args, 'save_vis', False):
+            print(f"+++ Vis: saving every {args.vis_interval} images")
 
     continual_methods = None
     if args.reset_mode == 'continual':
@@ -1997,6 +2054,8 @@ def run_domain_gen(args, device, start_time, all_results_path):
             adapt_method = continual_methods[t]
         else:
             adapt_method = get_method(args, device)
+        if demo_info is not None:
+            demo_info['save_vis'] = bool(getattr(args, 'save_vis', False) and t == 0)
 
         for domain_idx, domain_info in enumerate(domain_infos):
 
@@ -2334,6 +2393,25 @@ def process_single_batch_no_adapt(args, device, adapt_method, data, domain_info,
                               os.path.join(demo_dir, f"gt_{demo_info['global_sample_idx']:04d}.png"))
             save_demo_input(img_tensor,
                             os.path.join(demo_dir, f"input_{demo_info['global_sample_idx']:04d}.png"))
+        if (
+            demo_info is not None
+            and demo_info.get('save_vis', False)
+            and should_save_vis(demo_info['global_sample_idx'], args.vis_interval)
+        ):
+            vis_path = save_remote_visualization(
+                vis_root=args.vis_dir,
+                dataset=args.dataset,
+                corruption=domain_info['corruption'],
+                severity=args.corruption_severity,
+                sample_idx=demo_info['global_sample_idx'],
+                image_path=data['meta']['img_path'][idx],
+                pred=pd,
+                gt=gt,
+                palette=demo_info['palette'],
+                method_name=get_demo_method_name(args),
+                ignore_index=domain_info['ignore_index'],
+            )
+            print(f"+++ Vis: saved {vis_path}")
         if demo_info is not None:
             demo_info['global_sample_idx'] += 1
 
@@ -2350,7 +2428,7 @@ def prepare_domain_info(args, device, corruption, c_idx):
         corruption=corruption,
         batch_size=args.batch_size,
         num_workers=args.workers,
-        shuffle=not getattr(args, 'save_demo', False),
+        shuffle=not (getattr(args, 'save_demo', False) or getattr(args, 'save_vis', False)),
         corruption_severity=args.corruption_severity,
         tmpa_resolution=args.tmpa_resolution,
         tmpa_crop_size=args.tmpa_crop_size,
@@ -2489,6 +2567,25 @@ def process_single_batch(args, device, adapt_method, data, domain_info, demo_inf
             img_tensor = data['img'][idx]
             save_demo_overlay(img_tensor, pd, demo_info['palette'],
                               os.path.join(demo_dir, f"pred_{demo_info['global_sample_idx']:04d}.png"))
+        if (
+            demo_info is not None
+            and demo_info.get('save_vis', False)
+            and should_save_vis(demo_info['global_sample_idx'], args.vis_interval)
+        ):
+            vis_path = save_remote_visualization(
+                vis_root=args.vis_dir,
+                dataset=args.dataset,
+                corruption=domain_info['corruption'],
+                severity=args.corruption_severity,
+                sample_idx=demo_info['global_sample_idx'],
+                image_path=data['meta']['img_path'][idx],
+                pred=pd,
+                gt=gt,
+                palette=demo_info['palette'],
+                method_name=get_demo_method_name(args),
+                ignore_index=domain_info['ignore_index'],
+            )
+            print(f"+++ Vis: saved {vis_path}")
         if demo_info is not None:
             demo_info['global_sample_idx'] += 1
 
@@ -2715,14 +2812,21 @@ def run_lifelong(args, device, start_time, all_results_path):
     domain_map = {domain_info['corruption']: domain_info for domain_info in domain_infos}
 
     demo_info = None
-    if getattr(args, 'save_demo', False):
-        demo_indices = set(get_demo_indices(len(domain_infos[0]['data_loader'].dataset), args.save_k, args.seed))
+    if getattr(args, 'save_demo', False) or getattr(args, 'save_vis', False):
+        demo_indices = (
+            set(get_demo_indices(len(domain_infos[0]['data_loader'].dataset), args.save_k, args.seed))
+            if getattr(args, 'save_demo', False) else set()
+        )
         demo_info = {
             'indices': demo_indices,
             'palette': domain_infos[0]['data_loader'].dataset.metainfo['palette'],
             'global_sample_idx': 0,
+            'save_vis': bool(getattr(args, 'save_vis', False)),
         }
-        print(f"+++ Demo: saving {len(demo_indices)} images per corruption")
+        if getattr(args, 'save_demo', False):
+            print(f"+++ Demo: saving {len(demo_indices)} images per corruption")
+        if getattr(args, 'save_vis', False):
+            print(f"+++ Vis: saving every {args.vis_interval} images")
 
     continual_methods = None
     if args.reset_mode == 'continual':
@@ -2733,6 +2837,8 @@ def run_lifelong(args, device, start_time, all_results_path):
             adapt_method = continual_methods[t]
         else:
             adapt_method = get_method(args, device)
+        if demo_info is not None:
+            demo_info['save_vis'] = bool(getattr(args, 'save_vis', False) and t == 0)
 
         trial_results = {domain_info['corruption']: [] for domain_info in domain_infos}
         trial_loss_batch_report = {domain_info['corruption']: [] for domain_info in domain_infos}
