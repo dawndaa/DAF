@@ -81,7 +81,7 @@ def _adaptive_conv_fallback(source, filters):
     It is slower than the CUDA extension but preserves the JBU operation and
     keeps the branch runnable when featup's custom CUDA op is unavailable.
     """
-    _, _, out_h, out_w, k_h, k_w = filters.shape
+    _, out_h, out_w, k_h, k_w = filters.shape
     output = source.new_zeros((source.shape[0], source.shape[1], out_h, out_w))
     for y in range(k_h):
         for x in range(k_w):
