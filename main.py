@@ -1654,7 +1654,7 @@ def main(args):
                         prob_thd = float(getattr(adapt_method.model, 'segearth_prob_thd', 0.0))
                         if prob_thd > 0.0:
                             bg_idx = int(getattr(adapt_method.model, 'segearth_bg_idx', 0))
-                            pd[pred_conf < prob_thd] = bg_idx  # [H, W]
+                            pd[pred_conf < prob_thd] = bg_idx
                     pd = pd.to(gt.device)  
 
                     # get the ground truth
@@ -2298,11 +2298,11 @@ def process_single_batch_no_adapt(args, device, adapt_method, data, domain_info,
             pd = (pd * domain_info['ext_to_real_cls_indx']).max(1)[0]
 
         pred_conf, pd = pd.max(dim=0)
-                    if getattr(adapt_method.model, 'segearth_enabled', False):
-                        prob_thd = float(getattr(adapt_method.model, 'segearth_prob_thd', 0.0))
-                        if prob_thd > 0.0:
-                            bg_idx = int(getattr(adapt_method.model, 'segearth_bg_idx', 0))
-                            pd[pred_conf < prob_thd] = bg_idx
+        if getattr(adapt_method.model, 'segearth_enabled', False):
+            prob_thd = float(getattr(adapt_method.model, 'segearth_prob_thd', 0.0))
+            if prob_thd > 0.0:
+                bg_idx = int(getattr(adapt_method.model, 'segearth_bg_idx', 0))
+                pd[pred_conf < prob_thd] = bg_idx
         pd = pd.to(gt.device)
         gt = gt[0]
         if eval_scale < 1.0 and not is_tmpa_dataset:
@@ -2458,11 +2458,11 @@ def process_single_batch(args, device, adapt_method, data, domain_info, demo_inf
             pd = (pd * domain_info['ext_to_real_cls_indx']).max(1)[0]
 
         pred_conf, pd = pd.max(dim=0)
-                    if getattr(adapt_method.model, 'segearth_enabled', False):
-                        prob_thd = float(getattr(adapt_method.model, 'segearth_prob_thd', 0.0))
-                        if prob_thd > 0.0:
-                            bg_idx = int(getattr(adapt_method.model, 'segearth_bg_idx', 0))
-                            pd[pred_conf < prob_thd] = bg_idx
+        if getattr(adapt_method.model, 'segearth_enabled', False):
+            prob_thd = float(getattr(adapt_method.model, 'segearth_prob_thd', 0.0))
+            if prob_thd > 0.0:
+                bg_idx = int(getattr(adapt_method.model, 'segearth_bg_idx', 0))
+                pd[pred_conf < prob_thd] = bg_idx
         pd = pd.to(gt.device)
         gt = gt[0]
         if eval_scale < 1.0 and not is_tmpa_dataset:
